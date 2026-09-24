@@ -21,6 +21,7 @@ export function summarize(state = {}, at = Date.now()) {
     queues:(state.queues??[]).slice(0,8).map(q=>({type:short(String(q.type)),items:(q.items??[]).slice(0,6).map(i=>({name:short(i.name),quantity:count(i.quantity),progress:number(i.progress),status:short(i.status)}))})),
     inventory:Object.entries(state.inventory??{}).slice(0,48).map(([kind,u])=>({kind:short(kind),label:short(u.name),count:count(u.count)})),
     base:point(state.base),
+    ledger:state.ledger?{ownUnits:count(state.ledger.ownUnits),ownBuildings:count(state.ledger.ownBuildings),enemyUnits:count(state.ledger.enemyUnits),enemyBuildings:count(state.ledger.enemyBuildings),ownBuilt:count(state.ledger.ownBuilt),ownUnitsLost:count(state.ledger.ownUnitsLost),ownBuildingsLost:count(state.ledger.ownBuildingsLost),enemyUnitsDestroyed:count(state.ledger.enemyUnitsDestroyed),enemyBuildingsDestroyed:count(state.ledger.enemyBuildingsDestroyed)}:null,
     // collectState already truncates these visible-only lists. They are a schematic, not a full map.
     ownPoints:(state.army??[]).slice(0,24).map(u=>point(u.tile)).filter(Boolean),
     enemyPoints:(state.visibleEnemies??[]).slice(0,24).map(u=>point(u.tile)).filter(Boolean),
@@ -31,7 +32,8 @@ export function recordObservation(session, snapshot, at = Date.now()) {
   const last=session.history?.at(-1);
   const reset=last && observation.gameSeconds!==null && last.gameSeconds!==null && observation.gameSeconds<last.gameSeconds;
   let history=reset?[]:[...(session.history??[])];
-  const sample={at,gameSeconds:observation.gameSeconds,credits:observation.credits,freeCredits:observation.freeCredits,decisions:session.decisions??0};
+  const l=observation.ledger??session.observation?.ledger??null;
+  const sample={at,gameSeconds:observation.gameSeconds,credits:observation.credits,freeCredits:observation.freeCredits,decisions:session.decisions??0,...(l?{ownUnits:l.ownUnits,ownBuildings:l.ownBuildings,enemyUnits:l.enemyUnits,enemyBuildings:l.enemyBuildings,ownBuilt:l.ownBuilt,ownLost:l.ownUnitsLost+l.ownBuildingsLost,enemyDestroyed:l.enemyUnitsDestroyed+l.enemyBuildingsDestroyed}:{})};
   if(!last || reset || at-last.at>=SAMPLE_MS)history.push(sample);
   // Repeated popup polls and player events must not advance the sampling clock or erase the first point.
   history=history.slice(-HISTORY_LIMIT);

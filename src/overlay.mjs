@@ -19,7 +19,7 @@ export function createOverlayMonitor({rpc,createView,schedule=setTimeout,cancel=
       const next=await rpc({type:'OVERLAY_STATUS'});
       if(ticket!==revision || disposed)return;
       status=next;
-      config={...config,hotkey:next.hotkey??config.hotkey,language:next.language??config.language,showOverlay:next.showOverlay??config.showOverlay};
+      config={...config,hotkey:next.hotkey??config.hotkey,language:next.language??config.language,providerName:next.providerName??config.providerName,showOverlay:next.showOverlay??config.showOverlay};
       render();
       if(view)timer=schedule(refresh,1500);
     }catch{
@@ -69,16 +69,16 @@ export function createOverlayView(){
   }
   function attach(){(document.fullscreenElement??document.documentElement).append(host);layout();}
   function render(status,next){
-    config=next;lastStatus=status;const tr=key=>t(config.language,key);
+    config=next;lastStatus=status;const name=config.providerName||'Jev',tr=key=>t(config.language,key,{name});
     const format=n=>Number.isFinite(n)?Math.round(n).toLocaleString(config.language):'—';
     host.lang=config.language;$('section').setAttribute('aria-label',tr('title'));
-    $('.brand').textContent=`JEV · ${tr('officialWebsite')}`;$('.status-text').textContent=tr('running');
+    $('.brand').textContent=`${name.toUpperCase()} · ${tr('officialWebsite')}`;$('.status-text').textContent=tr('running');
     handle.title=tr('overlayDrag');handle.setAttribute('aria-label',`${tr('running')} · ${tr('overlayDrag')}`);
     button.textContent=collapsed?'+':'−';button.title=tr(collapsed?'overlayExpand':'overlayCollapse');button.setAttribute('aria-label',button.title);button.setAttribute('aria-expanded',String(!collapsed));
     $('.details').hidden=collapsed;
     for(const key of ['decisions','credits','latency'])$(`#${key}-label`).textContent=tr(key);
     $('#decisions').textContent=format(status.decisions??0);$('#credits').textContent=format(status.credits);$('#latency').textContent=Number.isFinite(status.latencyMs)?`${format(status.latencyMs)}ms`:'—';
-    $('.tick').textContent=status.lastTick!=null?`TICK ${format(status.lastTick)}`:'JEV';
+    $('.tick').textContent=status.lastTick!=null?`TICK ${format(status.lastTick)}`:name.toUpperCase();
     $('.shortcut').textContent=`${config.hotkey} · ${tr('stop')}`;
     $('.warning').hidden=!status.failures;$('.warning').textContent=t(config.language,'failures',{n:status.failures});
     layout();

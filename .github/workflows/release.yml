@@ -1,0 +1,114 @@
+name: Check, package and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Test and package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      zip: ${{ steps.meta.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests (builds dist/ first)
+        run: npm test
+
+      - name: Package extension ZIP
+        run: npm run package
+
+      - name: Read version and checksum
+        id: meta
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          manifest="$(node -p "require('./public/manifest.json').version")"
+          if [ "$version" != "$manifest" ]; then
+            echo "package.json ($version) and manifest.json ($manifest) versions differ" >&2
+            exit 1
+          fi
+          zip="artifacts/werhd-jev-extension-${version}.zip"
+          test -f "$zip"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          {
+            echo "## werhd-jev-extension $version"
+            echo
+            echo '```'
+            sha256sum "$zip"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: werhd-jev-extension-${{ steps.meta.outputs.version }}
+          path: ${{ steps.meta.outputs.zip }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.check.outputs.version }}
+      ZIP: ${{ needs.check.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: werhd-jev-extension-${{ env.VERSION }}
+          path: artifacts
+
+      - name: Create release for a new version
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; bump the version in package.json and public/manifest.json to publish a new one." >> "$GITHUB_STEP_SUMMARY"
+            echo "Release $tag already exists, skipping."
+            exit 0
+          fi
+          sha="$(sha256sum "$ZIP" | cut -d' ' -f1)"
+          previous="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          {
+            echo "Chrome / Edge 扩展安装包：解压后在 \`chrome://extensions\` 开启开发者模式，加载含 \`manifest.json\` 的目录。"
+            echo
+            echo "SHA-256: \`$sha\`"
+            echo
+            echo "## 本版本提交"
+            echo
+            if [ -n "$previous" ]; then
+              git log --no-merges --format='- %s (%h)' "${previous}..HEAD"
+            else
+              git log --no-merges --format='- %s (%h)' -n 20
+            fi
+          } > notes.md
+          gh release create "$tag" "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "werhd-jev-extension $VERSION" \
+            --notes-file notes.md
+          echo "Published release $tag: $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

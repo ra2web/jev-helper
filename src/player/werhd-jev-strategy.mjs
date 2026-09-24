@@ -368,17 +368,17 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
     groups.vehicles.criteria.wait = 'Wait only while the queue is busy or none of these reinforcements is affordable. There is no reserved capital project now; an idle affordable queue leaves the base exposed.';
   }
   recoveryGroups(api, catalog, snapshot, groups);
-  operationalGoals(api, catalog, snapshot, groups);
+  operationalGoals(api, catalog, snapshot, groups, memory);
 }
 
-function operationalGoals(api, catalog, snapshot, groups) {
+function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
   const { units } = snapshot.raw, s = snapshot.state;
   const ground = units.filter(u => u.type === api.ObjectType.Vehicle && u.primaryWeapon && !catalog[u.name]?.harvester && !catalog[u.name]?.naval && catalog[u.name]?.category !== 'AirPower');
   const aircraft = units.filter(u => catalog[u.name]?.aircraft && u.type !== api.ObjectType.Building);
   const target = Math.min(24, Math.max(12, Math.ceil((s.nearbyEnemyCount ?? 0) * 1.5)));
-  s.objective = 'Win this skirmish by finding and destroying the enemy base, not merely surviving near our own base.';
+  s.objective = memory.objective ? `Mission objective: ${memory.objective}. Find and destroy what the objective names; do not merely survive near our own base.` : 'Win this skirmish by finding and destroying the enemy base, not merely surviving near our own base.';
   s.forceGoal = { groundCombatVehicles: { current:ground.length, target }, aircraft:{current:aircraft.length,target:4},
-    attackThreshold:ATTACK_FORCE_SIZE, mobileAntiAir:{current:s.mobileAntiAirCount,attackMinimum:s.airThreatCount>0?ATTACK_AA_ESCORTS:0},
+    attackThreshold:s.forceReadiness?.threshold ?? ATTACK_FORCE_SIZE, ready:s.forceReadiness?.ready ?? false, mobileAntiAir:{current:s.mobileAntiAirCount,attackMinimum:s.airThreatCount>0&&(s.forceReadiness?.aaProducible??true)?ATTACK_AA_ESCORTS:0},
     enemyBaseKnown:!!s.knownEnemyBuildings?.length, reserve:s.strategy.reserve };
   s.decisionReadiness = {};
   for (const [id, queueType, current, desired] of [

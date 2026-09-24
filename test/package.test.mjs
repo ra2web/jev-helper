@@ -9,7 +9,7 @@ test('self-contained MV3 package has no remote modules, localhost bridge, eval o
   assert.equal(manifest.web_accessible_resources,undefined);
   assert.ok(!manifest.host_permissions.includes('https://*/*'));assert.ok(!manifest.permissions.includes('debugger'));
   for(const f of ['background.js','content.js','page.js','popup.js','popup.html','popup.css','help.html','icons/128.png'])await fs.access('dist/'+f);
-  const page=await fs.readFile('dist/page.js','utf8');assert.doesNotMatch(page,/127\.0\.0\.1:5174|Authorization|JEV_API_KEY|\beval\s*\(|\bfetch\s*\(/);
+  const page=await fs.readFile('dist/page.js','utf8');assert.doesNotMatch(page,/127\.0\.0\.1:5174|127\.0\.0\.1:8742|api\.typesafe\.ai|Authorization|JEV_API_KEY|\beval\s*\(|\bfetch\s*\(/);
   const scripts=await Promise.all(['background.js','content.js','page.js','popup.js'].map(f=>fs.readFile('dist/'+f,'utf8')));
   for(const s of scripts)assert.doesNotMatch(s,/import\s*\(\s*['"]https?:/);
 });

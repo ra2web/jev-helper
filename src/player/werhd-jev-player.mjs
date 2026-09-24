@@ -121,6 +121,69 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// Attack readiness follows what this base can actually field, not a fixed table of units.
+// - vehicles producible: the classic armored force (ATTACK_FORCE_SIZE) with anti-air escorts when needed
+// - vehicles not producible: every armed ground unit counts toward the same threshold
+// - nothing producible at all: attack with whatever exists
+// - force stopped growing for a long time (no factory, no money, unit cap): attack with what exists
+export const FORCE_STALL_TICKS = 2700;
+export function forceReadiness(api, catalog, state, army, tanks, memory) {
+  const tick = api.tick();
+  const vehicleType = api.QueueType?.Vehicles ?? 3, infantryType = api.QueueType?.Infantry ?? 2;
+  const offers = queue => { try { return api.production.available(queue) ?? []; } catch { return []; } };
+  const armed = name => (catalog[name]?.weapon?.damage ?? 0) > 0 && !catalog[name]?.harvester && !catalog[name]?.naval && catalog[name]?.category !== "AirPower";
+  const vehicleOffers = offers(vehicleType).filter(i => armed(i.name));
+  const infantryOffers = offers(infantryType).filter(i => armed(i.name) && !catalog[i.name]?.engineer);
+  const queued = (state.queues ?? []).flatMap(q => q.items ?? []).map(i => i.name);
+  const canBuildVehicles = vehicleOffers.length > 0 || queued.some(n => catalog[n] && armed(n) && catalog[n].category !== "Soldier" && catalog[n].type !== api.ObjectType?.Infantry);
+  const canBuildAnything = canBuildVehicles || infantryOffers.length > 0 || queued.some(n => armed(n));
+  const aaProducible = vehicleOffers.some(i => activeWeapons({ name: i.name }, catalog).some(w => w.aa)) || queued.some(n => catalog[n] && activeWeapons({ name: n }, catalog).some(w => w.aa) && catalog[n].category !== "Soldier");
+  const combatUnits = army.filter(u => u.type !== api.ObjectType.Building && !catalog[u.name]?.harvester && (u.primaryWeapon || (catalog[u.name]?.weapon?.damage ?? 0) > 0) && catalog[u.name]?.category !== "AirPower").length;
+  const progress = memory.forceProgress;
+  if (!progress || combatUnits > progress.count) memory.forceProgress = { count: combatUnits, tick };
+  const stalledTicks = memory.forceProgress ? tick - memory.forceProgress.tick : 0;
+  const stalled = combatUnits > 0 && stalledTicks >= FORCE_STALL_TICKS;
+  const aaNeeded = (state.airThreatCount ?? 0) > 0 && (state.mobileAntiAirCount ?? 0) < ATTACK_AA_ESCORTS;
+  const aaSatisfied = !aaNeeded || !aaProducible;
+  const committedAttack = memory.mission?.mode === "attack" && tanks.length >= 4;
+  const threshold = canBuildAnything ? ATTACK_FORCE_SIZE : 1;
+  let ready = false, reason;
+  if (committedAttack) { ready = true; reason = "an attack is already committed"; }
+  else if (stalled) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
+  else if (canBuildVehicles) {
+    ready = tanks.length >= ATTACK_FORCE_SIZE && aaSatisfied;
+    reason = ready ? `${tanks.length} ground combat vehicles fielded` : !aaSatisfied ? `air threats observed and only ${state.mobileAntiAirCount}/${ATTACK_AA_ESCORTS} mobile anti-air escorts` : `${tanks.length}/${ATTACK_FORCE_SIZE} ground combat vehicles; vehicles are producible`;
+  } else if (canBuildAnything) {
+    ready = combatUnits >= ATTACK_FORCE_SIZE && aaSatisfied;
+    reason = ready ? `${combatUnits} armed units fielded; vehicles cannot be produced here` : `${combatUnits}/${ATTACK_FORCE_SIZE} armed units; vehicles cannot be produced, infantry count toward the force`;
+  } else {
+    ready = combatUnits > 0;
+    reason = ready ? `nothing can be produced; attack with the ${combatUnits} units that exist` : "no armed units and no production available";
+  }
+  return { ready, reason, threshold, combatUnits, groundVehicles: tanks.length, canBuildVehicles, canBuildAnything, aaProducible, aaNeeded, stalledTicks };
+}
+
+// Both sides' unit and building counts, plus cumulative built / lost / destroyed, observed from the
+// public view: own losses are exact; enemy kills are counted only when a previously seen object is
+// gone from a tile we can still see, so anything that slipped away in fog is not claimed.
+export function updateLedger(api, catalog, memory) {
+  const tick = api.tick(), B = api.ObjectType.Building;
+  const ledger = memory.ledger ??= { seenOwn: new Map(), seenEnemy: new Map(), seeded: false, ownBuilt: 0, ownUnitsLost: 0, ownBuildingsLost: 0, enemyUnitsDestroyed: 0, enemyBuildingsDestroyed: 0 };
+  const own = api.units("self"), enemies = api.units("enemy");
+  const ownIds = new Set();
+  for (const u of own) { ownIds.add(u.id); if (!ledger.seenOwn.has(u.id)) { ledger.seenOwn.set(u.id, { building: u.type === B }); if (ledger.seeded) ledger.ownBuilt++; } }
+  for (const [id, info] of ledger.seenOwn) if (!ownIds.has(id)) { ledger.seenOwn.delete(id); if (info.building) ledger.ownBuildingsLost++; else ledger.ownUnitsLost++; }
+  const enemyIds = new Set();
+  for (const e of enemies) { enemyIds.add(e.id); ledger.seenEnemy.set(e.id, { building: e.type === B, x: e.tile?.rx, y: e.tile?.ry, tick }); }
+  for (const [id, info] of ledger.seenEnemy) if (!enemyIds.has(id)) {
+    if (info.x !== undefined && api.map.visible(info.x, info.y)) { ledger.seenEnemy.delete(id); if (info.building) ledger.enemyBuildingsDestroyed++; else ledger.enemyUnitsDestroyed++; }
+    else if (tick - info.tick > 3000) ledger.seenEnemy.delete(id);
+  }
+  ledger.seeded = true;
+  return { ownUnits: own.filter(u => u.type !== B).length, ownBuildings: own.filter(u => u.type === B).length, enemyUnits: enemies.filter(u => u.type !== B).length, enemyBuildings: enemies.filter(u => u.type === B).length,
+    ownBuilt: ledger.ownBuilt, ownUnitsLost: ledger.ownUnitsLost, ownBuildingsLost: ledger.ownBuildingsLost, enemyUnitsDestroyed: ledger.enemyUnitsDestroyed, enemyBuildingsDestroyed: ledger.enemyBuildingsDestroyed };
+}
+
 export function frontierPoints(api, base, memory) {
   const size = api.map.size();
   const points = [];
@@ -306,7 +369,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const scoutUnits=army.filter(u=>u.type===api.ObjectType.Infantry).sort((a,b)=>scoutScore(catalog[b.name])-scoutScore(catalog[a.name]));
   const bestScout=scoutUnits[0];
   if(bestScout)memory.scoutId=bestScout.id;
-  const needsScout=!memory.enemyBuildings.size&&!state.baseUnderAttack&&preferredScout&&
+  const needsScout=(!memory.enemyBuildings.size||memory.lastReady===false)&&!state.baseUnderAttack&&preferredScout&&
     !scoutUnits.some(u=>u.name===preferredScout.name)&&!state.queues.some(q=>q.items.some(i=>i.name===preferredScout.name));
   const roles={antiInfantry:0,antiArmor:0};
   for(const u of scoutUnits)if(u.id!==memory.scoutId&&catalog[u.name]?.weapon?.range>=3)roles[infantryProfile(catalog[u.name],api).role]++;
@@ -445,10 +508,13 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const support = army.filter(u=>u.type===api.ObjectType.Infantry&&u.id!==memory.scoutId&&
     api.tick()-(memory.specialOrders?.get(u.id)?.tick??-10000)>450);
   const active = [...tanks,...support];
+  const readiness = forceReadiness(api, catalog, state, army, tanks, memory);
+  state.forceReadiness = readiness;
+  memory.lastReady = readiness.ready;
   const rallySite=chooseRallySite(api,catalog,units,base);
   const tactics = group(
     "tactics",
-    `Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with at least ${ATTACK_FORCE_SIZE} ground combat vehicles while production builds toward the force goal. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
+    `${memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ` : ''}Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with the force goal computed in state.forceReadiness: ${readiness.ready ? `the force is READY (${readiness.reason}); choose a supplied attack or advance mission now` : `not ready yet (${readiness.reason}); ${readiness.threshold} combat units are required, ${readiness.combatUnits} exist`}. The threshold follows what this base can actually produce: when vehicles cannot be built, infantry count; when nothing can be built or the force has stopped growing, attack with what exists. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
   );
   groups.tactics.criteria.wait = "Keep an active useful combat mission, or wait when no suitable mission is supplied. Do not keep rallying after the force is ready and an attack target is supplied. Credit balance is irrelevant to movement and attack orders.";
   state.combat = {
@@ -463,11 +529,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     (combatWeapon(b,catalog).range??0)-(combatWeapon(a,catalog).range??0));
   if (active.length) {
     const ids = active.map((u) => u.id);
-    const committedAttack =
-      memory.mission?.mode === "attack" && tanks.length >= 4;
-    const ready =
-      (tanks.length >= ATTACK_FORCE_SIZE || committedAttack) &&
-      (state.airThreatCount === 0 || state.mobileAntiAirCount >= ATTACK_AA_ESCORTS);
+    const ready = readiness.ready;
     if (!ready && !threatening.length && rallySite && memory.enemyBuildings.size)
       tactics(
         "assemble_force",
@@ -481,6 +543,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           y: rallySite.y,
         },
       );
+    const navalDefenders = units.filter(u => u.type !== api.ObjectType.Building && catalog[u.name]?.naval && u.primaryWeapon &&
+      threatening.length && (api.weaponVs ? !!api.weaponVs(u.id, threatening[0].id) : true)).map(u => u.id);
     if (threatening.length)
       tactics(
         "defend_base",
@@ -489,7 +553,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           type: "mission",
           mode: "defend",
           label: "保卫基地",
-          ids,
+          ids: [...ids, ...navalDefenders],
           targetId: threatening[0].id,
           x: threatening[0].tile.rx,
           y: threatening[0].tile.ry,
@@ -575,8 +639,9 @@ export function candidateGroups(api, catalog, snapshot, memory) {
       (u) => Math.hypot(u.tile.rx - oldMission.x, u.tile.ry - oldMission.y) > 4,
     ) &&
     api.tick() - oldMission.since < 450;
+  // Keep revealing the map while no attack is possible: an enemy building seen once must not end scouting.
   const shouldExplore =
-    !memory.enemyBuildings.size && !travelling && !state.baseUnderAttack;
+    (!memory.enemyBuildings.size || !readiness.ready) && !travelling && !state.baseUnderAttack;
   const scoutChoice = group(
     "scouting",
     "Choose a frontier to reveal the unknown enemy base. Use one expendable infantry early; do not wait for tanks to scout. If an idle scout is available and the enemy base is unknown, scouting now is useful. An existing travelling scout is handled separately.",
@@ -591,11 +656,11 @@ export function candidateGroups(api, catalog, snapshot, memory) {
       memory.points = frontierPoints(api, base, memory);
       memory.pointsAt = api.tick();
     }
-    const mobilize =
-      tanks.length >= 8 &&
-      (state.airThreatCount === 0 || state.mobileAntiAirCount >= ATTACK_AA_ESCORTS);
+    const mobilize = readiness.ready && !memory.enemyBuildings.size;
     groups.scouting.criteria.wait =
-      "Wait only if a scout is already moving or the enemy base has already been discovered. With idle troops and an unknown enemy base, choose one of the frontiers.";
+      memory.enemyBuildings.size
+        ? "Wait only if a scout is already moving. The force is not ready to attack, so one expendable unit should keep revealing the map for objectives and enemy positions."
+        : "Wait only if a scout is already moving or the enemy base has already been discovered. With idle troops and an unknown enemy base, choose one of the frontiers.";
     for (const p of memory.points.slice(0, 2))
       scoutChoice(
         `explore_${p.x}_${p.y}`,
@@ -791,6 +856,11 @@ export function maintainBattle(api, catalog, memory, emit) {
       api.tick() - (memory.specialOrders?.get(u.id)?.tick ?? -10000) > 450 &&
       u.primaryWeapon,
   );
+  // Ships defend themselves like ground units: any enemy in range is engaged, even during a
+  // model-issued strike or scouting order. They never join land missions or corridor clearing.
+  const naval = own.filter(
+    (u) => u.type !== api.ObjectType.Building && catalog[u.name]?.naval && !catalog[u.name]?.harvester && u.primaryWeapon,
+  );
   const living = new Set(own.map((u) => u.id));
   const mission = memory.mission;
   const defending = mission?.mode === 'defend';
@@ -825,7 +895,7 @@ export function maintainBattle(api, catalog, memory, emit) {
     const buildings=own.filter(u=>u.type===api.ObjectType.Building);
     const base=buildings.find(u=>catalog[u.name]?.yard)??buildings[0];
     const exits=buildings.filter(b=>catalog[b.name]?.refinery||catalog[b.name]?.factory==='UnitType');
-    const clearing=mobile.filter(u=>u.type===api.ObjectType.Vehicle&&u.isIdle&&!u.isDeployed&&
+    const clearing=mobile.filter(u=>u.type===api.ObjectType.Vehicle&&!catalog[u.name]?.naval&&u.isIdle&&!u.isDeployed&&
       !(defending && defenseThreats.length && mission.ids.includes(u.id))&&
       !enemies.some(e=>distance(e.tile,u.tile)<10)&&exits.some(b=>distance(u.tile,b.tile)<6)&&
       tick-(memory.orders.get(u.id)?.tick??-10000)>150);
@@ -865,7 +935,7 @@ export function maintainBattle(api, catalog, memory, emit) {
   }
   // Mechanics: focus on a reachable in-range enemy, without replacing the model's macro mission.
   let issued = 0;
-  for (const u of mobile) {
+  for (const u of [...mobile, ...naval]) {
     if (tick - (memory.postureOrders?.get(u.id) ?? -1000) < 20) continue;
     const last = memory.orders.get(u.id);
     if (last && tick - last.tick < 18) continue;
@@ -908,6 +978,11 @@ export function maintainBattle(api, catalog, memory, emit) {
       api.attack([u.id], options[0].id);
       memory.orders.set(u.id, { targetId: options[0].id, tick });
       issued++;
+    } else if (catalog[u.name]?.naval && u.isIdle && (!last || tick - last.tick > 90)) {
+      // Idle ships close on nearby enemies they can hurt instead of waiting to be shot at.
+      const near = enemies.filter(e => canHit(e) && distance(e.tile, u.tile) <= 12 && effectiveness(catalog[u.name], [e], catalog, api) > 0)
+        .sort((a, b) => distance(a.tile, u.tile) - distance(b.tile, u.tile))[0];
+      if (near) { api.attack([u.id], near.id); memory.orders.set(u.id, { targetId: near.id, tick }); issued++; }
     } else if (
       !u.isDeployed &&
       mission?.ids.includes(u.id) &&
@@ -950,6 +1025,7 @@ export async function attachJevPlayer(api, options = {}) {
     maxStaleTicks = options.maxStaleTicks ?? 180;
   const memory = {
     autoCamera: options.autoCamera !== false,
+    objective: typeof options.objective === "string" ? options.objective.trim().slice(0, 300) : "",
     frontiers: new Map(),
     enemyBuildings: new Map(),
     lastPlaceTick: -1000,
@@ -986,11 +1062,13 @@ export async function attachJevPlayer(api, options = {}) {
     options.onEvent?.(event);
     if (options.debug && event.kind !== "observation") console.info("[werhd-jev]", event);
   };
+  let lastMicroAt = -Infinity, lastDecideAt = -Infinity;
   const stop = (reason = "manual") => {
     if (!status.running) return;
     status.running = false;
     clearTimeout(decisionTimer);
     clearTimeout(microTimer);
+    if (typeof api.offTick === "function") { try { api.offTick(); } catch {} }
     controller.abort();
     emit({
       kind: "stop",
@@ -1001,6 +1079,7 @@ export async function attachJevPlayer(api, options = {}) {
   };
   const micro = () => {
     if (!status.running) return;
+    lastMicroAt = performance.now();
     try {
       if (api.tick() !== progressTick) {
         progressTick = api.tick();
@@ -1043,6 +1122,7 @@ export async function attachJevPlayer(api, options = {}) {
             queues: snap.state.queues,
             state: { ...snap.state, strategy: memory.strategy },
             mission: memory.mission?.label,
+            ledger: updateLedger(api, catalog, memory),
           };
         status.observations.push(o);
         if (status.observations.length > 180) status.observations.shift();
@@ -1060,6 +1140,7 @@ export async function attachJevPlayer(api, options = {}) {
   };
   const decide = async () => {
     if (!status.running) return;
+    lastDecideAt = performance.now();
     try {
       const tick = api.tick();
       if (tick === lastTick) return;
@@ -1169,6 +1250,27 @@ export async function attachJevPlayer(api, options = {}) {
           ...execution,
         });
       }
+      // Mechanical fallback: with nothing in sight and no known enemy structure, an army must keep
+      // searching. After three declined scouting questions the first frontier is taken anyway.
+      const scoutAnswer = result.answers.scouting;
+      if (scoutAnswer && groups.scouting) {
+        const nothingToFight = snap.state.visibleEnemyCount === 0 && !memory.enemyBuildings.size;
+        memory.scoutDeclines = scoutAnswer.choice === "wait" && nothingToFight ? (memory.scoutDeclines ?? 0) + 1 : 0;
+        if (memory.scoutDeclines >= 3) {
+          const [choice, action] = Object.entries(groups.scouting.actions).find(([k]) => k !== "wait") ?? [];
+          if (action) {
+            const execution = executeCandidate(api, action, catalog);
+            memory.scoutDeclines = 0;
+            if (execution.accepted) {
+              status.accepted++;
+              memory.mission = { ...action, ids: execution.ids ?? action.ids, since: api.tick() };
+              memory.frontiers.set(`${action.x},${action.y}`, api.tick());
+              memory.points = undefined;
+            }
+            emit({ kind: "action", tick: api.tick(), sourceTick: tick, question: "scouting", choice, auto: true, action, ...execution, reason: execution.accepted ? "auto_explore" : execution.reason });
+          }
+        }
+      }
     } catch (e) {
       if (/outside a running battle/.test(e.message)) {
         stop("battle_ended");
@@ -1185,7 +1287,25 @@ export async function attachJevPlayer(api, options = {}) {
         decisionTimer = setTimeout(decide, options.intervalMs ?? 600);
     }
   };
-  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: "v8.8.15-tactics-wait" });
+  // Page timers are throttled to once a minute in a hidden tab while the simulation keeps running.
+  // The game's own tick callback is not, so every tick wakes the loops when a timer is overdue.
+  // The callback itself stays trivial (the game disables handlers that exceed ~8 ms).
+  const microEvery = options.microIntervalMs ?? 150, decideEvery = options.wakeIntervalMs ?? options.intervalMs ?? 600;
+  let wakePending = false, tickDriven = false;
+  const runDue = () => {
+    wakePending = false;
+    if (!status.running) return;
+    const now = performance.now();
+    if (!options.disableMicro && now - lastMicroAt >= microEvery) { clearTimeout(microTimer); micro(); }
+    if (!status.busy && now - lastDecideAt >= decideEvery) { clearTimeout(decisionTimer); decide(); }
+  };
+  if (typeof api.onTick === "function" && !options.disableTickWake) {
+    try {
+      api.onTick(() => { if (!wakePending) { wakePending = true; Promise.resolve().then(runDue); } });
+      tickDriven = true;
+    } catch { tickDriven = false; }
+  }
+  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: "v8.8.15-tactics-wait", tickDriven });
   if (!options.disableMicro) microTimer = setTimeout(micro, 0);
   decisionTimer = setTimeout(decide, 0);
   return { status, stop, catalog, memory, setAutoCamera: (enabled) => { memory.autoCamera = !!enabled; } };

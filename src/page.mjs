@@ -2,7 +2,7 @@ import {attachJevPlayer} from './player/werhd-jev-player.mjs';
 import {CHANNEL} from './shared.mjs';
 import {createObserver} from './observer.mjs';
 
-const VERSION='0.3.0';
+const VERSION='0.4.4';
 if(window.__werhdJevExtension?.version!==VERSION){
   window.__werhdJevExtension?.dispose?.();
   let player,token='',api;
@@ -44,7 +44,7 @@ if(window.__werhdJevExtension?.version!==VERSION){
       // Stop an older manually attached client to avoid two controllers commanding one player.
       window.werhdJev?.stop?.('extension_takeover');
       token=options.token;api=window.werhd;
-      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,requestDecision,onEvent:event=>{
+      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,requestDecision,onEvent:event=>{
         post({type:'EVENT',event});
       }});
       return {running:true};

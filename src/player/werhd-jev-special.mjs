@@ -117,7 +117,8 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     }
   }
   const engineering = group('engineering', 'Repair a bridge to restore mobility when engineers are available. Demolish a bridge only to delay a visible enemy attack, with no friendly troops on it and a viable alternative position. Preserve engineers after unsuccessful orders.');
-  const huts = civilians.filter((u) => catalog[u.name]?.bridgeRepairHut && distance(base.tile, u.tile) < 40);
+  // Repair huts near the base or near any of our units: a broken bridge on the advance route matters too.
+  const huts = civilians.filter((u) => catalog[u.name]?.bridgeRepairHut && (distance(base.tile, u.tile) < 40 || units.some((o) => distance(o.tile, u.tile) < 25)));
   const engineers = units.filter((u) => catalog[u.name]?.engineer);
   for (const hut of huts.slice(0, 3)) {
     const engineer = engineers.find((u) => idle(u, memory, tick));

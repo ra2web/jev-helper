@@ -4,14 +4,14 @@ import {createOverlayMonitor,createOverlayView} from './overlay.mjs';
 
 if (!globalThis.__werhdJevContent) {
   globalThis.__werhdJevContent = true;
-  let token='',hotkey=DEFAULTS.hotkey,language=DEFAULTS.language;
+  let token='',hotkey=DEFAULTS.hotkey,language=DEFAULTS.language,providerName='Jev';
   const rpc = async message => {
     const response=await chrome.runtime.sendMessage(message);
     if(!response?.ok)throw new Error(response?.error||'扩展后台未响应，请重新加载插件后刷新游戏页面。');
     return response.value;
   };
   const overlay=createOverlayMonitor({rpc,createView:createOverlayView});
-  const configure=c=>{hotkey=c.hotkey??hotkey;language=c.language??language;overlay.configure({hotkey,language,showOverlay:c.showOverlay??DEFAULTS.showOverlay});};
+  const configure=c=>{hotkey=c.hotkey??hotkey;language=c.language??language;providerName=c.providerName??providerName;overlay.configure({hotkey,language,providerName,showOverlay:c.showOverlay??DEFAULTS.showOverlay});};
   rpc({type:'PUBLIC_CONFIG'}).then(configure).catch(()=>{});
   document.addEventListener('visibilitychange',()=>overlay.setActive(document.visibilityState!=='hidden'));
   window.addEventListener('pagehide',()=>overlay.setActive(false));
@@ -45,6 +45,6 @@ if (!globalThis.__werhdJevContent) {
     if(!event.isTrusted || event.repeat || event.isComposing || target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName))return;
     if(hotkeyFromEvent(event)!==hotkey)return;
     event.preventDefault();event.stopImmediatePropagation();
-    rpc({type:'HOTKEY_TOGGLE'}).then(s=>{overlay.changed(s.running);toast(t(language,s.running?'toastOn':'toastOff'));},e=>toast(errorText(language,e.message)));
+    rpc({type:'HOTKEY_TOGGLE'}).then(s=>{overlay.changed(s.running);toast(t(language,s.running?'toastOn':'toastOff',{name:providerName}));},e=>toast(errorText(language,e.message)));
   },true);
 }
