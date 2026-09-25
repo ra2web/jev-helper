@@ -13,7 +13,7 @@ export function vehicleOptions(api, catalog, state) {
   return api.production.available(api.QueueType?.Vehicles ?? 3).flatMap(item=>{
     const r=catalog[item.name];
     if(!r||r.naval||r.engineer||catalog[r.deploysInto]?.yard)return [];
-    const economic=r.harvester&&state.harvesters+incomingMiners<3;
+    const economic=r.harvester&&state.harvesters+incomingMiners<(state.economy?.targetMiners??3);
     const combat=!r.harvester&&[r.weapon,r.secondary].some(w=>w?.damage>0&&w.range>=4);
     const antiAir=[r.weapon,r.secondary].some(w=>w?.damage>0&&w.aa);
     const groundPower=antiAir&&r.category==='AFV' ? effectiveness(r,
@@ -24,7 +24,7 @@ export function vehicleOptions(api, catalog, state) {
     if(!economic&&!combat)return [];
     if(combat&&state.airThreatCount>0&&state.mobileAntiAirCount<aaTarget&&!antiAir)return [];
     if(combat&&antiAir&&!groundCore&&state.mobileAntiAirCount>=aaTarget)return [];
-    if(combat&&state.harvesters<2&&!state.baseUnderAttack)return [];
+    if(combat&&state.harvesters<Math.min(2,state.economy?.targetMiners??2)&&!state.baseUnderAttack)return [];
     if(economic&&state.baseUnderAttack&&state.mobileTankCount<5)return [];
     return [{...item,economic,antiAir}];
   });
@@ -223,7 +223,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   const defenseTargets = strategy.underPressure ? attackers : [];
   const targetDefenses = strategy.underPressure ? (strategy.suppressed ? 6 : 3) : 1;
   let defensePlan, coverage = 0;
-  if (s.harvesters >= (strategy.underPressure ? 1 : 2) && free(api.QueueType.Armory)) {
+  if (s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2, strategy.underPressure ? 1 : 2) && free(api.QueueType.Armory)) {
     const options = api.production.available(api.QueueType.Armory).filter(i => catalog[i.name]?.isBaseDefense && !catalog[i.name]?.wall)
       .map(i => ({ ...i, queue: api.QueueType.Armory, value: effectiveness(catalog[i.name], defenseTargets, catalog, api) }));
     coverage = defenseUnits.filter(u => defenseTargets.length
@@ -246,11 +246,10 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
       add(dg, item, `${strategy.underPressure ? 'URGENT' : 'PREPARE'}: counter-fire at (${placement.x},${placement.y}), estimated effectiveness ${Math.round(item.value)}; enemy ranges ${reachableThreats.map(e=>currentWeapon(e,catalog).range).join(',') || 'no local target'}`, Math.min(200, r.cost), placement);
       defensePlan ??= { name: item.name, cost: r.cost, queue: item.queue };
     }
-    if (!strategy.underPressure && defenseUnits.length && s.uncommittedCredits > 1800 && buildings.filter(u => catalog[u.name]?.wall).length < 4) {
-      const wall = api.production.available(api.QueueType.Armory).find(i => catalog[i.name]?.wall);
-      if (wall) { const placement = chooseBuildingSite(api, catalog, wall.name, units, memory); if (placement) add(dg, { ...wall, queue: api.QueueType.Armory }, 'Screen a defended approach without blocking factory exits', catalog[wall.name].cost, placement); }
-    }
   }
+  // Without a threat this question was answered "wait" every time and cost about a quarter of the
+  // tokens of each turn; it is only asked while the base is under pressure.
+  if (!strategy.underPressure) { delete groups.defenses; defensePlan = undefined; }
   const cg = group('construction', 'Restore core infrastructure, then unlock higher technology. During suppression, build a firing line and develop a counter instead of spending forever on basic tanks. Aircraft factories and higher-tech buildings unlock new options. A repair dock is not an airfield.');
   // Remove the old special-layer air-support guess and rebuild the tech options from rule categories.
   for (const [key, a] of Object.entries(cg.actions)) if (a.type === 'produce' && !catalog[a.name]?.naval && !catalog[a.name]?.refinery && !(catalog[a.name]?.power > 0) && !['InfantryType', 'UnitType', 'BuildingType'].includes(catalog[a.name]?.factory)) {
@@ -270,7 +269,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   const escortNeeded = s.airThreatCount>0 && s.mobileAntiAirCount<ATTACK_AA_ESCORTS;
   const incompleteForce = mobileCount<ATTACK_FORCE_SIZE || escortNeeded;
   const mobileDefenseNeeded = strategy.underPressure && incompleteForce;
-  const forceNeeded = incompleteForce && s.harvesters >= 2 && !economyPlan;
+  const forceNeeded = incompleteForce && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && !economyPlan;
   const groundRole = name => !catalog[name]?.naval && !catalog[name]?.aircraft && catalog[name]?.category !== 'AirPower';
   const mobileOptions = vehicleOptions(api,catalog,s).filter(i=>!i.economic && groundRole(i.name))
     .map(i=>({...i,cost:catalog[i.name].cost,queue:api.QueueType.Vehicles}));
@@ -312,7 +311,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   if (!counterPlan && queuedCounter) counterPlan = { name:queuedCounter.name,
     cost:Math.max(0,queuedCounter.creditsEach*queuedCounter.quantity-queuedCounter.creditsSpent),
     queue:api.QueueType.Vehicles,category:'vehicles',purpose:strategy.underPressure?counterPurpose:'mobilize',pending:true };
-  const coreReady = !economyPlan && !forcePlan && !((mobileDefenseNeeded||forceNeeded) && counterPlan) && s.harvesters >= 2 && s.economy?.factories > 0 && (armorCount >= 4 || strategy.suppressed && coverage >= 2 || standoff.length > 0);
+  const coreReady = !economyPlan && !forcePlan && !((mobileDefenseNeeded||forceNeeded) && counterPlan) && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && s.economy?.factories > 0 && (armorCount >= 4 || strategy.suppressed && coverage >= 2 || standoff.length > 0);
   const candidates = available.filter(i => i.type === api.ObjectType.Building && !ownNames.has(i.name))
     .filter(i => { const r = catalog[i.name]; return r && !r.naval && !r.yard && !r.refinery && !r.isBaseDefense && !r.wall && !(r.power > 0) && (isAirSupport(r) || r.buildCategory === 'Tech' && !r.factory); })
     .sort((a, b) => Number(isAirSupport(catalog[b.name])) - Number(isAirSupport(catalog[a.name])) || (catalog[b.name].techLevel ?? 0) - (catalog[a.name].techLevel ?? 0));
@@ -363,7 +362,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
     g.instructions += ' Compare effective damage against the current enemy mix, range and technology level. Use newly unlocked counters instead of repeating the cheapest basic unit.';
     for (const [key,a] of Object.entries(g.actions)) if (a.type === 'produce') g.criteria[key] += ` Tech ${catalog[a.name]?.techLevel ?? 0}; estimated current-target effectiveness ${Math.round(effectiveness(catalog[a.name], enemies, catalog, api))}.`;
   }
-  if (groups.vehicles && s.harvesters >= 2 && armorCount < 4 && !strategy.investment) {
+  if (groups.vehicles && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && armorCount < 4 && !strategy.investment) {
     groups.vehicles.instructions += ' URGENT: the base has fewer than four mobile armored units. Build the offered combat reinforcement now when affordable; do not wait for an unplanned future technology investment.';
     groups.vehicles.criteria.wait = 'Wait only while the queue is busy or none of these reinforcements is affordable. There is no reserved capital project now; an idle affordable queue leaves the base exposed.';
   }
@@ -375,7 +374,8 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
   const { units } = snapshot.raw, s = snapshot.state;
   const ground = units.filter(u => u.type === api.ObjectType.Vehicle && u.primaryWeapon && !catalog[u.name]?.harvester && !catalog[u.name]?.naval && catalog[u.name]?.category !== 'AirPower');
   const aircraft = units.filter(u => catalog[u.name]?.aircraft && u.type !== api.ObjectType.Building);
-  const target = Math.min(24, Math.max(12, Math.ceil((s.nearbyEnemyCount ?? 0) * 1.5)));
+  const escalation = s.combatAssessment?.level ?? 0;
+  const target = Math.min(24, Math.max(12, Math.ceil((s.nearbyEnemyCount ?? 0) * 1.5)) + 4 * escalation);
   s.objective = memory.objective ? `Mission objective: ${memory.objective}. Find and destroy what the objective names; do not merely survive near our own base.` : 'Win this skirmish by finding and destroying the enemy base, not merely surviving near our own base.';
   s.forceGoal = { groundCombatVehicles: { current:ground.length, target }, aircraft:{current:aircraft.length,target:4},
     attackThreshold:s.forceReadiness?.threshold ?? ATTACK_FORCE_SIZE, ready:s.forceReadiness?.ready ?? false, mobileAntiAir:{current:s.mobileAntiAirCount,attackMinimum:s.airThreatCount>0&&(s.forceReadiness?.aaProducible??true)?ATTACK_AA_ESCORTS:0},
@@ -385,6 +385,7 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
     ['vehicles',api.QueueType.Vehicles,ground.length,target],['aircraft',api.QueueType.Aircrafts,aircraft.length,4],
   ]) {
     const g=groups[id]; if (!g) continue;
+    if (escalation) g.instructions += ` REINFORCE (escalation ${escalation}): attacks are failing; build toward ${desired} before the next assault and prefer units effective against the observed enemy mix over more of the same.`;
     const q=s.queues.find(q=>q.type===queueType);
     const candidates=Object.values(g.actions).filter(a=>a.type==='produce');
     const affordable=candidates.filter(a=>s.uncommittedCredits-a.cost>=s.strategy.reserve);
@@ -406,7 +407,7 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
       g.criteria.wait = 'Wait only if the miner is already queued or unavailable, or its minimum starting budget is unavailable. Do not reserve this miner budget forever without starting the miner.';
       continue;
     }
-    const blocked=s.strategy.recovery || s.harvesters<2 || q?.size>0 || !affordable.length;
+    const blocked=s.strategy.recovery || s.harvesters<Math.min(2,s.economy?.targetMiners??2) || q?.size>0 || !affordable.length;
     s.decisionReadiness[id]={queueIdle:!q?.size,current,target:desired,deficit:Math.max(0,desired-current),
       credits:s.self.credits,committedCredits:s.committedCredits,reserve:s.strategy.reserve,
       affordableCandidates:affordable.map(a=>a.name),waitingSupported:!needed||!!blocked};
@@ -446,7 +447,8 @@ function recoveryGroups(api, catalog, snapshot, groups) {
   if (!targetQueue?.size && s.self.credits >= Math.min(500,required)) {
     const key=`recover_${candidate.name}`;
     groups[category].criteria[key]=`SURVIVAL: rebuild ${r.label} to restore ${miner || hasYard?'ore income':'construction'}. Cost ${r.cost}; stop discretionary investment until recovery completes.`;
-    groups[category].actions[key]={type:'produce',name:candidate.name,queue,cost:r.cost,minCredits:Math.min(500,required)};
+    // Survival rebuilds are never optional: after two declined turns the executor builds it anyway.
+    groups[category].actions[key]={type:'produce',name:candidate.name,queue,cost:r.cost,minCredits:Math.min(500,required),auto:2};
   }
   if (s.self.credits >= required) return;
   const g=groups.salvage ??= {instructions:'Recover a destroyed economy or construction capability. Cancel discretionary spending and sell expendable technology to fund recovery. Preserve the factory and all prerequisites needed to rebuild.',criteria:{wait:'Wait only when no safe liquidation is available.'},actions:{wait:{type:'wait'}}};

@@ -2,12 +2,14 @@
   "manifest_version": 3,
   "name": "王二火大 WannaFire · Jev",
   "description": "王二火大 / WannaFire — Jev autopilot, live battlefield awareness and decision/economy charts. 中文 / English.",
-  "version": "0.4.4",
+  "version": "0.7.5",
   "minimum_chrome_version": "120",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "downloads"
   ],
   "host_permissions": [
     "https://api.typesafe.ai/*",
@@ -18,12 +20,7 @@
   ],
   "optional_host_permissions": [
     "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*",
-    "http://10.*/*",
-    "http://192.168.*/*",
-    "http://172.*/*",
-    "http://*.local/*"
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js",

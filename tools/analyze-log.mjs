@@ -23,6 +23,10 @@ if (text.trimStart().startsWith('{') && text.includes('"entries"')) {
   console.log('\n各决策组：');
   for (const [id, g] of Object.entries(s.groups)) console.log(`  ${id.padEnd(13)} 问 ${String(g.asked).padStart(4)} 次 · 等待率 ${String(g.waitRate).padStart(3)}% · 平均候选 ${g.avgOptions} · 置信 ${g.avgConfidence} · 常选：${list(g.choices)}`);
   const decisions = (data.entries ?? []).filter(e => e.kind === 'decision');
+  const autos = (data.entries ?? []).filter(e => e.kind === 'action' && e.auto);
+  if (autos.length) console.log(`\n自动兜底动作：${list(autos.reduce((m, a) => (m[a.reason] = (m[a.reason] ?? 0) + 1, m), {}))}（模型连续拒绝后由扩展直接执行）`);
+  const stale = decisions.filter(e => e.state?.hints && Object.keys(e.state.hints).length).length;
+  if (stale) console.log(`带「历史参考 / 老选项降级」提示的决策：${stale} 次`);
   const low = decisions.filter(e => Object.values(e.groups ?? {}).every(g => g.choice === 'wait')).length;
   console.log(`\n全部选择等待的决策：${low} / ${decisions.length}（${pct(low, decisions.length)}）`);
   const first = decisions[0];

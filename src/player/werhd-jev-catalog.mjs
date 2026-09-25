@@ -26,3 +26,15 @@ export function refreshCatalog(api, catalog) {
   }
   return catalog;
 }
+
+// Map decorations are owned by a house and look like buildings, but they have no function:
+// flags, lamp posts, pipes, fences, signs. They are never worth attacking or capturing, and an
+// army sent at one across a broken bridge stays stuck for the rest of the match.
+const DECORATION = /\b(flag|light ?post|lamp|pipes?|fence|sign|statue|tree|barrels?|crates?|billboard|mailbox|hydrant|bench|traffic|telephone|phone booth|debris|rubble|monument|fountain)\b/i;
+const functional = (r) => !!r && (r.power > 0 || r.refinery || r.factory || r.constructionYard || r.yard || r.isBaseDefense || r.weapon?.damage > 0 || r.canBeOccupied || r.bridgeRepairHut);
+export const isDecoration = (rule, name = rule?.name) => !functional(rule) && DECORATION.test(`${rule?.label ?? ''} ${name ?? ''}`);
+// Buildings an engineer can actually take: the standard technology buildings plus anything with a
+// working function. Decorations and plain civilian props are left out.
+const TECH_NAMES = /^CA(OILD|HOSP|MACH|AIRP|POWR|OUTP|SLAB|ARMY|TECH)/i;
+const TECH_LABEL = /\b(tech|oil derrick|derrick|hospital|machine shop|airport|outpost|secret lab|laboratory|power plant|reactor)\b/i;
+export const isCapturable = (rule, name = rule?.name) => !isDecoration(rule, name) && (TECH_NAMES.test(name ?? '') || TECH_LABEL.test(rule?.label ?? '') || rule?.power > 0 || !!rule?.refinery || !!rule?.factory || !!rule?.constructionYard);

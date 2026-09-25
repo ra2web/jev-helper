@@ -121,7 +121,8 @@ console.log('Base perimeter: forward garrisons do not replace core infrastructur
 // Battle 25: the first armed enemy was a building on an inaccessible lowland tile.
 // Engaging mobile units must retain an object target; idle retries must not aim at occupied cells.
 const remoteBuilding=unit(130,'SHORT_TOWER',2,70,70),remoteTank=unit(131,'BASIC',7,65,70);
-own=[own[0],...Array.from({length:8},(_,i)=>unit(200+i,'BASIC',7,30+i,30))];
+// 0.6.0: engage_visible only offers enemies within 15 tiles of the troops, so the column stands nearby.
+own=[own[0],...Array.from({length:8},(_,i)=>unit(200+i,'BASIC',7,55+i,62))];
 enemies=[remoteBuilding,remoteTank];
 m=memory();snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,m);
 assert.equal(groups.tactics.actions.engage_visible.targetId,131,'engage mobile enemy, not first armed building');
@@ -140,7 +141,7 @@ catalog.ENEMY_FOOT={armor:'none',weapon:weapon(5,20)};
 catalog.ENEMY_TANK={armor:'heavy',weapon:weapon(5,60)};
 const soft={...unit(301,'ENEMY_FOOT',3,65,70),armor:0,hitPoints:125};
 const armor={...unit(302,'ENEMY_TANK',7,66,70),armor:5,hitPoints:300};
-own=[unit(1,'YARD',2,30,30),...Array.from({length:8},(_,i)=>unit(400+i,'ANTI_ARMOR',7,30+i,30))];
+own=[unit(1,'YARD',2,30,30),...Array.from({length:8},(_,i)=>unit(400+i,'ANTI_ARMOR',7,55+i,64))];
 enemies=[soft,armor];m=memory();snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,m);
 assert.equal(groups.tactics.actions.engage_visible.targetId,armor.id,'aggregate weapon matchups select the armored threat, not the first enemy');
 own[1].tile={rx:62,ry:70};own.push(unit(410,'ANTI_FOOT',3,62,70));

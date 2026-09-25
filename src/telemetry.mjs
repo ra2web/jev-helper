@@ -31,11 +31,13 @@ export function recordObservation(session, snapshot, at = Date.now()) {
   const observation={...snapshot,at};
   const last=session.history?.at(-1);
   const reset=last && observation.gameSeconds!==null && last.gameSeconds!==null && observation.gameSeconds<last.gameSeconds;
-  let history=reset?[]:[...(session.history??[])];
+  let history=reset?[]:[...(session.history??[])],sampleMs=reset?SAMPLE_MS:(session.sampleMs??SAMPLE_MS);
   const l=observation.ledger??session.observation?.ledger??null;
   const sample={at,gameSeconds:observation.gameSeconds,credits:observation.credits,freeCredits:observation.freeCredits,decisions:session.decisions??0,...(l?{ownUnits:l.ownUnits,ownBuildings:l.ownBuildings,enemyUnits:l.enemyUnits,enemyBuildings:l.enemyBuildings,ownBuilt:l.ownBuilt,ownLost:l.ownUnitsLost+l.ownBuildingsLost,enemyDestroyed:l.enemyUnitsDestroyed+l.enemyBuildingsDestroyed}:{})};
-  if(!last || reset || at-last.at>=SAMPLE_MS)history.push(sample);
+  if(!last || reset || at-last.at>=sampleMs)history.push(sample);
   // Repeated popup polls and player events must not advance the sampling clock or erase the first point.
-  history=history.slice(-HISTORY_LIMIT);
-  return {...session,observation,history,lastTick:observation.tick,credits:observation.credits,army:observation.army};
+  // A long match keeps its whole shape: when the buffer is full, every other point is dropped and the
+  // sampling interval doubles, so the curve always spans the match instead of only its last minutes.
+  while(history.length>HISTORY_LIMIT){history=history.filter((_,i)=>i%2===0||i===history.length-1);sampleMs*=2;}
+  return {...session,observation,history,sampleMs,lastTick:observation.tick,credits:observation.credits,army:observation.army};
 }

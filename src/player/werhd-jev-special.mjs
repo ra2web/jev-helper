@@ -1,9 +1,36 @@
 import { isAirSupport } from './werhd-jev-strategy.mjs';
+import { isCapturable } from './werhd-jev-catalog.mjs';
+export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3, SIEGE_RANGE = 8, BASE_GARRISON_SPARE = 8;
+// Leaving a building once its job is done: no armed enemy within RELEASE_RADIUS for this long.
+export const ENTRY_RESENDS = 3;
+export const RELEASE_RADIUS = 10, RELEASE_TICKS = { siege: 150, forward: 900, base: 2700 }, REENTER_COOLDOWN = 1800;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
-const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450;
+// A unit still on a special task (an engineer trailing the column for a capture) is never idle.
+const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450 && !memory.specialTasks?.some((t) => t.action.ids?.includes(unit.id));
 const friendlyOnBridge = (api, tile) => [...api.units('self'), ...api.units('allied')]
   .some(u => u.onBridge && distance(u.tile, { rx: tile.x, ry: tile.y }) < 7);
+
+// Revealed bridges, shore near the base and sea frontiers, refreshed at most once per 120 simulation ticks.
+export function refreshInfrastructure(api, memory, base) {
+  const tick = api.tick();
+  if (!memory.infrastructure || tick - memory.infrastructure.tick >= 120) {
+    const bridges = new Map();
+    const water = [], seaFrontiers = [];
+    const { width, height } = api.map.size();
+    for (let x = 0; x < width; x++) for (let y = 0; y < height; y++) {
+      const tile = api.map.tile(x, y);
+      if (tile?.bridge) bridges.set(tile.bridge.id, { ...tile.bridge, x, y });
+      if (tile?.landType === (api.LandType?.Water ?? 7)) {
+        if (base && distance(base.tile, tile) < 24) water.push({ x, y });
+        if (x % 3 === 0 && y % 3 === 0 && [[5,0],[-5,0],[0,5],[0,-5]].some(([dx,dy]) =>
+          x+dx >= 0 && y+dy >= 0 && x+dx < width && y+dy < height && !api.map.visible(x+dx,y+dy))) seaFrontiers.push({ x, y });
+      }
+    }
+    memory.infrastructure = { tick, bridges: [...bridges.values()], water, seaFrontiers };
+  }
+  return memory.infrastructure;
+}
 
 export function specialGroups(api, catalog, snapshot, memory, groups) {
   const { units, enemies, buildings, base } = snapshot.raw;
@@ -27,30 +54,14 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       groups[id].actions[key] = action;
     };
   };
-  const addProduction = (add, item, purpose, placement) => {
+  const addProduction = (add, item, purpose, placement, extra = {}) => {
     const r = catalog[item.name];
     add(`produce_${item.name}`, `${purpose}: ${r.label}, cost ${r.cost}.`, {
       type: 'produce', name: item.name, queue: item.queue, cost: r.cost, minCredits: r.cost,
-      placement,
+      placement, ...extra,
     });
   };
-  // Refresh revealed infrastructure at most once per 120 simulation ticks.
-  if (!memory.infrastructure || tick - memory.infrastructure.tick >= 120) {
-    const bridges = new Map();
-    const water = [], seaFrontiers = [];
-    const { width, height } = api.map.size();
-    for (let x = 0; x < width; x++) for (let y = 0; y < height; y++) {
-      const tile = api.map.tile(x, y);
-      if (tile?.bridge) bridges.set(tile.bridge.id, { ...tile.bridge, x, y });
-      if (tile?.landType === (api.LandType?.Water ?? 7)) {
-        if (distance(base.tile, tile) < 24) water.push({ x, y });
-        if (x % 3 === 0 && y % 3 === 0 && [[5,0],[-5,0],[0,5],[0,-5]].some(([dx,dy]) =>
-          x+dx >= 0 && y+dy >= 0 && x+dx < width && y+dy < height && !api.map.visible(x+dx,y+dy))) seaFrontiers.push({ x, y });
-      }
-    }
-    memory.infrastructure = { tick, bridges: [...bridges.values()], water, seaFrontiers };
-  }
-  const { bridges, water } = memory.infrastructure;
+  const { bridges, water } = refreshInfrastructure(api, memory, base);
   snapshot.state.infrastructure = {
     visibleGarrisons: civilians.filter((u) => u.garrison).slice(0, 8).map((u) => ({ id: u.id, tile: u.tile, ...u.garrison })),
     visibleBridgePieces: bridges.length, shoreNearBase: !!water.length,
@@ -69,20 +80,59 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       posture(`mobilize_${u.id}`, `Pack up ${r.label} #${u.id} into ${r.undeploysInto} to join the mobile force; no visible enemy is in its firing range.`,
         { type: 'special', kind: 'undeploy_morph', ids: [u.id], order: { type: api.OrderType.DeploySelected } });
   }
-  const garrison = group('garrison', 'Use nearby empty civilian buildings as defensive strongpoints. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
+  const garrison = group('garrison', 'Use empty civilian buildings as strongpoints. SIEGE options put infantry into a building within reach of an enemy defense (pillbox, tower) so it is destroyed from cover; clear each defense on its own side of the road instead of pushing past it. Base strongpoints only matter when the base is threatened. Occupants leave automatically once the job is done and no armed enemy is near, so entering does not lose them for the rest of the match. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
+  const occupiers = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId);
+  // Base strongpoints tie infantry down at home; offer them only under threat or with plenty to spare.
+  // Only a real threat: with automatic training there are nearly always eight idle infantry, and a
+  // spare-infantry rule kept a home house in an enter / leave loop (0.6.0 match: 65 orders, 497 retries).
+  const baseGarrisonWanted = !!snapshot.state.baseUnderAttack;
+  // Siege from cover: for each visible enemy defense, the empty civilian building closest to it that
+  // is within reach. Every defense gets its own option, so both sides of a road can be taken.
+  const assessment = snapshot.state.combatAssessment;
+  // Also when the army has been unable to reach attack strength for a long time: taking a defense from
+  // cover is then the only progress the infantry can make.
+  const readiness = snapshot.state.forceReadiness;
+  const deadlocked = !!readiness && !readiness.ready && (readiness.stalledTicks ?? 0) >= ATTACK_STUCK_TICKS;
+  const attacksFailing = (assessment?.level ?? 0) >= 1 || !!assessment?.staleAttack || deadlocked;
+  const recentlyLeft = (id) => tick - (memory.evacuatedAt?.get(id) ?? -Infinity) < REENTER_COOLDOWN;
+  const houses = [...civilians, ...buildings].filter((u) => u.garrison?.canOccupy && !u.garrison.count && !own.has(u.id) && !recentlyLeft(u.id));
+  const center = occupiers.length ? { rx: occupiers.reduce((n, u) => n + u.tile.rx, 0) / occupiers.length, ry: occupiers.reduce((n, u) => n + u.tile.ry, 0) / occupiers.length } : base.tile;
+  // Only defenses that can hit ground troops: an anti-air site does not block the road.
+  const groundWeapon = (r) => (r?.weapon?.damage ?? 0) > 0 && r.weapon.ag !== false;
+  const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && groundWeapon(catalog[e.name]))
+    .sort((a, b) => distance(a.tile, center) - distance(b.tile, center)).slice(0, 4);
+  const sieged = new Set();
+  // A pillbox our infantry just had to back away from: take it from cover now.
+  const wantedSiege = (id) => tick - (memory.siegeWanted?.get(id) ?? -Infinity) < 1800;
+  for (const defense of [...enemyDefenses].sort((a, b) => Number(wantedSiege(b.id)) - Number(wantedSiege(a.id)))) {
+    const range = catalog[defense.name]?.weapon?.range ?? 0;
+    const house = houses.filter((h) => !sieged.has(h.id) && distance(h.tile, defense.tile) <= SIEGE_RANGE)
+      .sort((a, b) => distance(a.tile, defense.tile) - distance(b.tile, defense.tile))[0];
+    if (!house) continue;
+    const crew = [...occupiers].sort((a, b) => distance(a.tile, house.tile) - distance(b.tile, house.tile))
+      .slice(0, Math.min(house.garrison.capacity, 5, Math.max(0, infantry.length - 2)));
+    if (crew.length < 2) continue;
+    sieged.add(house.id);
+    const label = catalog[defense.name]?.label ?? defense.name;
+    const urgent = attacksFailing || wantedSiege(defense.id);
+    garrison(`siege_${house.id}`, `${urgent ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${urgent ? `; ${wantedSiege(defense.id) ? 'it is outranging our infantry right now' : deadlocked ? 'the army has not been able to attack for a long time' : 'attacks in the open are failing'}` : ''}.`,
+      { type: 'special', kind: 'garrison', ids: crew.map((u) => u.id), targetId: house.id,
+        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: urgent ? (wantedSiege(defense.id) ? 1 : 2) : undefined, purpose: 'siege', defenseId: defense.id });
+  }
   for (const building of [...civilians, ...buildings].filter((u) => u.garrison).slice(0, 10)) {
     if (own.has(building.id)) {
       if (building.garrison.count && building.hitPoints / building.maxHitPoints < 0.45)
         garrison(`evacuate_${building.id}`, `Evacuate ${building.garrison.count} infantry from badly damaged building #${building.id}.`,
           { type: 'special', kind: 'evacuate_garrison', ids: [building.id], order: { type: api.OrderType.DeploySelected } });
-    } else if (building.garrison.canOccupy && !building.garrison.count && distance(base.tile, building.tile) < 28) {
+    } else if (building.garrison.canOccupy && !building.garrison.count && !sieged.has(building.id) && !recentlyLeft(building.id) && ((baseGarrisonWanted && distance(base.tile, building.tile) < 28) || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14 && distance(base.tile, building.tile) >= 28))) {
+      const forward = !(distance(base.tile, building.tile) < 28);
       const candidates = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId)
         .sort((a, b) => distance(a.tile, building.tile) - distance(b.tile, building.tile))
         .slice(0, Math.min(3, building.garrison.capacity, Math.max(0, infantry.length - 2)));
       if (candidates.length)
-        garrison(`occupy_${building.id}`, `Garrison ${candidates.length} infantry in civilian building #${building.id} at (${building.tile.rx},${building.tile.ry}); protect base approaches.`,
+        garrison(`occupy_${building.id}`, `Garrison ${candidates.length} infantry in civilian building #${building.id} at (${building.tile.rx},${building.tile.ry}); ${forward ? 'forward strongpoint next to the attack target: fire from cover instead of trading units in the open' : 'protect base approaches'}.`,
           { type: 'special', kind: 'garrison', ids: candidates.map((u) => u.id), targetId: building.id,
-            order: { type: api.OrderType.Occupy, target: { objectId: building.id } } });
+            order: { type: api.OrderType.Occupy, target: { objectId: building.id } }, purpose: forward ? 'forward' : 'base' });
     }
   }
   const transport = group('transport', 'Use spare infantry to crew empty transports or IFVs when it improves the current mission. Keep anti-air escorts free when enemy aircraft are present. Unload near combat on safe land; never unload infantry into water.');
@@ -116,20 +166,71 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       if (freeQueue(queue)) addProduction(group(queue === api.QueueType.Ships ? 'navy' : 'vehicles', 'Choose a useful vehicle for combined arms.'), { ...carrier, queue }, 'Build one transport for a landing force');
     }
   }
-  const engineering = group('engineering', 'Repair a bridge to restore mobility when engineers are available. Demolish a bridge only to delay a visible enemy attack, with no friendly troops on it and a viable alternative position. Preserve engineers after unsuccessful orders.');
+  const engineering = group('engineering', `Engineer tasks. Capture neutral technology structures and undefended enemy structures: a captured building changes hands intact and is often a mission objective${memory.objective ? ` (mission objective: ${memory.objective})` : ''}. Repair a bridge to restore mobility. Demolish a bridge only to delay a visible enemy attack, with no friendly troops on it and a viable alternative position. Preserve engineers after unsuccessful orders.`);
   // Repair huts near the base or near any of our units: a broken bridge on the advance route matters too.
   const huts = civilians.filter((u) => catalog[u.name]?.bridgeRepairHut && (distance(base.tile, u.tile) < 40 || units.some((o) => distance(o.tile, u.tile) < 25)));
   const engineers = units.filter((u) => catalog[u.name]?.engineer);
-  for (const hut of huts.slice(0, 3)) {
-    const engineer = engineers.find((u) => idle(u, memory, tick));
+  // Is the army stuck? The same attack target re-ordered for a long time without being destroyed is
+  // the usual sign of a land route cut by a destroyed bridge. Re-issuing the order keeps the clock.
+  const mission = memory.mission;
+  memory.attackSince ??= new Map();
+  if (mission?.mode === 'attack' && mission.targetId !== undefined && !memory.attackSince.has(mission.targetId)) memory.attackSince.set(mission.targetId, tick);
+  const stuckFor = mission?.mode === 'attack' && mission.targetId !== undefined ? tick - (memory.attackSince.get(mission.targetId) ?? tick) : 0;
+  const stuckName = enemies.find((e) => e.id === mission?.targetId)?.name ?? memory.enemyBuildings?.get(mission?.targetId)?.name;
+  const stuckTarget = stuckFor > ATTACK_STUCK_TICKS || snapshot.state.combatAssessment?.staleAttack ? `${catalog[stuckName]?.label ?? stuckName ?? 'the target'} #${mission?.targetId}` : '';
+  const damagedBridges = bridges.filter((b) => Number.isFinite(b.hitPoints) && b.maxHitPoints > 0 && b.hitPoints < b.maxHitPoints).length;
+  const bridgeUrgent = !!stuckTarget || damagedBridges > 0;
+  const bridgeWhy = [stuckTarget && `our attack on ${stuckTarget} has made no progress for ${Math.max(stuckFor, ATTACK_STUCK_TICKS)} ticks, most likely because a destroyed bridge cuts the land route`, damagedBridges && `${damagedBridges} damaged bridge piece${damagedBridges > 1 ? 's are' : ' is'} visible`].filter(Boolean).join('; ');
+  // Bridge repair comes first: it reopens the route the whole army needs. It is offered only with a
+  // reason (a stuck attack or visible damage): "no known damage yet" sent engineers on empty trips.
+  for (const hut of bridgeUrgent ? huts.slice(0, 3) : []) {
+    const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, hut.tile) - distance(b.tile, hut.tile))[0];
     if (engineer && tick - (memory.specialTargets?.get(`repair_${hut.id}`) ?? -10000) > 1200)
-      engineering(`repair_${hut.id}`, `Inspect and repair the bridge associated with visible hut #${hut.id}; engineer #${engineer.id}. A healthy bridge will reject repair.`,
+      engineering(`repair_${hut.id}`, `PRIORITY BRIDGE REPAIR (${bridgeWhy}): send engineer #${engineer.id} into bridge repair hut #${hut.id} at (${hut.tile.rx},${hut.tile.ry}), ${Math.round(distance(engineer.tile, hut.tile))} tiles away. A repaired bridge reopens the land route; if the bridge is intact the order is simply rejected and nothing is lost.`,
         { type: 'special', kind: 'repair_bridge', ids: [engineer.id], targetId: hut.id,
-          order: { type: api.OrderType.Repair, target: { objectId: hut.id } } });
+          order: { type: api.OrderType.Repair, target: { objectId: hut.id } }, auto: 2 });
   }
-  if (huts.length && !engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
-    const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], 1200));
-    if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry }, 'Train one engineer for visible bridge repair');
+  // Capture targets: neutral structures first (technology buildings, outposts), then enemy economic or
+  // production buildings with no armed enemy within nine tiles. Walls, defenses, huts and garrisonable
+  // civilian houses are never capture targets.
+  const enemyIds = new Set(enemies.map((u) => u.id));
+  const armedNear = (tile) => enemies.some((e) => (e.primaryWeapon || catalog[e.name]?.weapon?.damage > 0) && distance(e.tile, tile) <= 9);
+  const captureTargets = hostile
+    .filter((u) => u.type === api.ObjectType.Building && !own.has(u.id) && !u.garrison && !catalog[u.name]?.wall && !catalog[u.name]?.isBaseDefense && !catalog[u.name]?.bridgeRepairHut && !(catalog[u.name]?.weapon?.damage > 0) && !memory.uncapturable?.has(u.id))
+    .map((u) => ({ unit: u, neutral: !enemyIds.has(u.id), defended: armedNear(u.tile), dist: Math.min(...[base, ...engineers].map((o) => distance(o.tile, u.tile))) }))
+    // Neutral targets must be real technology buildings; lamp posts and pipes owned by a civilian
+    // house cannot be captured and only trap the engineer in a retry loop.
+    .filter((c) => c.neutral ? isCapturable(catalog[c.unit.name], c.unit.name) : (!c.defended && (catalog[c.unit.name]?.refinery || catalog[c.unit.name]?.factory || catalog[c.unit.name]?.yard || catalog[c.unit.name]?.power > 0 || (catalog[c.unit.name]?.techLevel ?? 0) >= 2)))
+    .sort((a, b) => Number(b.neutral) - Number(a.neutral) || Number(a.defended) - Number(b.defended) || a.dist - b.dist)
+    .slice(0, 4);
+  // The player's capture objective ("使用工程师占领盟军战略实验室") comes first even when defended:
+  // the mission needs it, and waiting does not make it safer.
+  const wanted = memory.objectiveTarget?.mode === 'capture' && !memory.objectiveTarget.done ? hostile.find((u) => u.id === memory.objectiveTarget.id) : undefined;
+  if (wanted) {
+    const at = captureTargets.findIndex((c) => c.unit.id === wanted.id);
+    if (at >= 0) captureTargets.splice(at, 1);
+    captureTargets.unshift({ unit: wanted, neutral: !enemyIds.has(wanted.id), defended: armedNear(wanted.tile), objective: true, dist: Math.min(...[base, ...engineers].map((o) => distance(o.tile, wanted.tile))) });
+    captureTargets.length = Math.min(captureTargets.length, 4);
+  }
+  memory.captureTargets = captureTargets.map((c) => c.unit.id);
+  for (const c of captureTargets) {
+    const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, c.unit.tile) - distance(b.tile, c.unit.tile))[0];
+    if (!engineer || tick - (memory.specialTargets?.get(`repair_${c.unit.id}`) ?? -10000) <= 600) continue;
+    engineering(`capture_${c.unit.id}`, `${c.objective ? 'MISSION OBJECTIVE CAPTURE' : c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: ${c.objective && c.defended ? `engineer #${engineer.id} follows behind our attacking column and enters when the column reaches` : `send engineer #${engineer.id} into`} ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
+      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } },
+        // A defended objective: the engineer follows the army instead of walking in alone (0.7.3 sent
+        // about fifteen engineers 117 tiles through the defenses one by one; none arrived).
+        ...(c.objective && c.defended ? { escort: true } : {}), auto: c.objective ? 1 : c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
+  }
+  // A defended capture objective can cost an engineer on the way in: keep two ready for it.
+  const engineersWanted = Math.min(2, captureTargets.length) + (wanted && armedNear(wanted.tile) ? 1 : 0) + (huts.length && bridgeUrgent ? 1 : 0);
+  const objectiveEngineer = wanted && engineers.length < engineersWanted;
+  if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && (snapshot.state.self.credits > 1800 || objectiveEngineer)) {
+    const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], objectiveEngineer ? 0 : 1200));
+    const first = captureTargets[0];
+    if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry },
+      huts.length && bridgeUrgent ? `PRIORITY: train an engineer to repair the bridge (${bridgeWhy})` : objectiveEngineer ? `MISSION OBJECTIVE: train an engineer to capture ${catalog[wanted.name]?.label ?? wanted.name} #${wanted.id}` : first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
+      undefined, { auto: objectiveEngineer ? 1 : (first || bridgeUrgent) && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : bridgeUrgent ? 3 : undefined });
   }
   for (const bridge of bridges.slice(0, 12)) {
     const tile = { rx: bridge.x, ry: bridge.y };
@@ -222,6 +323,9 @@ export function executeSpecial(api, action) {
       attackerNames: api.units('self').filter(u => action.ids.includes(u.id)).map(u => u.name) };
   }
   if (action.targetId !== undefined && !api.unit(action.targetId)) return { accepted: false, reason: 'target_no_longer_visible' };
+  if (action.kind === 'capture' && api.units('self').some((u) => u.id === action.targetId)) return { accepted: false, reason: 'already_owned' };
+  // Escorted capture: nothing is sent yet; maintenance walks the engineer behind the column.
+  if (action.kind === 'capture' && action.escort) return { accepted: true, ids: action.ids, escort: true };
   if (action.kind === 'garrison') {
     const target = api.unit(action.targetId);
     if (!target?.garrison?.canOccupy || target.garrison.count >= target.garrison.capacity)
@@ -235,7 +339,7 @@ export function executeSpecial(api, action) {
     if (!api.order([action.targetId], { type: api.OrderType.Stop }))
       return { accepted: false, reason: 'transport_stop_rejected' };
   }
-  if (['garrison', 'load', 'repair_bridge'].includes(action.kind)) {
+  if (['garrison', 'load', 'repair_bridge', 'capture'].includes(action.kind)) {
     const deployed = api.units('self').filter((u) => action.ids.includes(u.id) && u.isDeployed).map((u) => u.id);
     if (deployed.length) return { accepted: api.deploy(deployed), ids: action.ids, phase: 'preparing' };
   }
@@ -250,6 +354,14 @@ export function rememberSpecial(memory, action, execution, tick) {
       started: tick, lastProgress: tick, hitPoints: execution.bridge.hitPoints });
     for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   }
+  if (action.ids?.length && action.kind === 'capture' && execution.accepted) {
+    memory.specialTasks.push({ action, started: tick, submitted: tick, ...(action.escort ? { escort: true, moved: -10000 } : {}) });
+    for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
+  }
+  if (action.kind === 'garrison' && execution.accepted) {
+    memory.garrisons ??= new Map();
+    memory.garrisons.set(action.targetId, { purpose: action.purpose ?? 'base', defenseId: action.defenseId, since: tick });
+  }
   if (action.ids?.length && ['garrison', 'load'].includes(action.kind)) {
     memory.specialTasks.push({ action, phase: execution.phase ?? 'entering', started: tick, submitted: tick });
     for (const id of [...action.ids, ...(action.kind === 'load' ? [action.targetId] : [])])
@@ -258,13 +370,65 @@ export function rememberSpecial(memory, action, execution, tick) {
 }
 
 // A multi-step player task; the engine still receives only ordinary independent commands.
-export function maintainSpecial(api, memory, emit) {
+// Escorted capture: the engineer trails the column by this many tiles and goes in when the column's
+// centre is this close to the target, or when no armed enemy is left this close to it.
+export const ESCORT_TRAIL_TILES = 4, ESCORT_ARRIVE_TILES = 8, ESCORT_MOVE_TICKS = 60;
+function maintainEscort(api, memory, task, own, tick, emit, catalog, done) {
+  const { action } = task, engineer = own.get(action.ids[0]), target = api.unit(action.targetId);
+  if (own.has(action.targetId)) return done('completed');
+  if (!engineer) return done('engineer_lost');
+  if (!target) return done('target_lost');
+  memory.specialOrders.set(engineer.id, { tick, kind: 'capture' });
+  const armed = (api.units('enemy') ?? []).some((e) => e.id !== target.id && (e.primaryWeapon || catalog?.[e.name]?.weapon?.damage > 0) && distance(e.tile, target.tile) <= ESCORT_ARRIVE_TILES);
+  const column = (memory.mission?.ids ?? []).map((id) => own.get(id)).filter(Boolean);
+  const center = column.length ? { rx: column.reduce((n, u) => n + u.tile.rx, 0) / column.length, ry: column.reduce((n, u) => n + u.tile.ry, 0) / column.length } : undefined;
+  if (!armed || center && distance(center, target.tile) <= ESCORT_ARRIVE_TILES) {
+    const execution = executeSpecial(api, { ...action, escort: false });
+    if (!execution.accepted) return done('rejected');
+    Object.assign(task, { escort: false, started: tick, submitted: tick });
+    emit({ kind: 'micro', tick, description: `capture: ${armed ? '部队已到目标旁' : '目标附近已无守军'}，工程师 #${engineer.id} 进入 #${action.targetId}`, targetId: action.targetId, ids: [engineer.id] });
+    return true;
+  }
+  // Behind the column, on the side facing the engineer; without a column the engineer stays put.
+  if (center && tick - task.moved >= ESCORT_MOVE_TICKS) {
+    const d = distance(engineer.tile, center) || 1;
+    if (d > ESCORT_TRAIL_TILES + 2) {
+      const x = Math.round(center.rx + (engineer.tile.rx - center.rx) / d * ESCORT_TRAIL_TILES), y = Math.round(center.ry + (engineer.tile.ry - center.ry) / d * ESCORT_TRAIL_TILES);
+      api.move([engineer.id], x, y);
+    }
+    task.moved = tick;
+  }
+  return true;
+}
+
+export function maintainSpecial(api, memory, emit, catalog) {
+  releaseGarrisons(api, memory, emit);
   if (!memory.specialTasks?.length) return;
   const own = new Map(api.units('self').map((u) => [u.id, u]));
   const tick = api.tick();
   memory.specialTasks = memory.specialTasks.filter((task) => {
     const { action } = task;
     if (action.kind === 'demolish_bridge') return maintainDemolition(api, memory, task, own, tick, emit);
+    if (action.kind === 'capture') {
+      const engineer = own.get(action.ids[0]), target = api.unit(action.targetId);
+      const done = (result) => { for (const id of action.ids) memory.specialOrders.delete(id); emit({ kind: result === 'completed' ? 'observed' : 'task', tick, task: 'capture', description: `capture ${result}: #${action.targetId}`, result, targetId: action.targetId }); return false; };
+      if (task.escort) return maintainEscort(api, memory, task, own, tick, emit, catalog, done);
+      if (own.has(action.targetId)) return done('completed');
+      if (!engineer) return target ? done('engineer_lost') : done('incomplete');
+      if (!target && tick - task.started > 600) return done('target_lost');
+      // An engineer that goes idle next to its target again and again is being refused: stop and never offer it again.
+      const giveUp = (result) => { (memory.uncapturable ??= new Set()).add(action.targetId); return done(result); };
+      if (tick - task.started > 2400) return giveUp('timeout');
+      if (target && engineer.isIdle && tick - task.submitted >= 150 && (task.resends ?? 0) >= CAPTURE_RESENDS) return giveUp('uncapturable');
+      memory.specialOrders.set(engineer.id, { tick, kind: 'capture' });
+      if (target && engineer.isIdle && tick - task.submitted >= 150) {
+        const execution = executeSpecial(api, action);
+        if (!execution.accepted) return done('rejected');
+        task.submitted = tick; task.resends = (task.resends ?? 0) + 1;
+        emit({ kind: 'micro', tick, description: `capture: 工程师 #${engineer.id} 重新前往 #${action.targetId}`, targetId: action.targetId, ids: [engineer.id] });
+      }
+      return true;
+    }
     const target = api.unit(action.targetId);
     const contained = action.kind === 'garrison' ? target?.garrison?.unitIds : target?.transport?.unitIds;
     const entered = action.ids.filter((id) => contained?.includes(id));
@@ -294,6 +458,9 @@ export function maintainSpecial(api, memory, emit) {
       task.phase = 'entering'; task.submitted = tick;
       emit({ kind: 'micro', tick, description: `${action.kind}: 姿态确认后进入目标`, targetId: action.targetId, ids: remaining });
     } else if (tick - task.submitted >= 120 && remaining.some(id => own.get(id).isIdle)) {
+      // Crew that keeps standing outside after three re-sends cannot get in: stop trying.
+      if ((task.resends ?? 0) >= ENTRY_RESENDS) return finish('refused');
+      task.resends = (task.resends ?? 0) + 1;
       const idleIds = remaining.filter(id => own.get(id).isIdle);
       const execution = executeSpecial(api, { ...action, ids: idleIds });
       if (!execution.accepted) return finish('rejected');
@@ -336,4 +503,28 @@ function maintainDemolition(api, memory, task, own, tick, emit) {
   if (tick - task.started >= 1800) return finish('time_limit');
   for (const id of ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   return true;
+}
+
+// Infantry sent into a building comes back out once the job is done, so it rejoins the army instead
+// of sitting there for the rest of the match. Never while an armed enemy is close: stepping out
+// under fire is how units get wasted. A building that was just left is not offered again for a while.
+export function releaseGarrisons(api, memory, emit) {
+  if (!memory.garrisons?.size) return;
+  const tick = api.tick();
+  const own = new Map(api.units('self').map((u) => [u.id, u]));
+  const armed = api.units('enemy').filter((e) => e.primaryWeapon || e.secondaryWeapon);
+  for (const [id, g] of memory.garrisons) {
+    const building = own.get(id);
+    if (!building?.garrison?.count) { memory.garrisons.delete(id); continue; }
+    const threatened = armed.some((e) => distance(e.tile, building.tile) <= RELEASE_RADIUS);
+    const targetAlive = g.purpose === 'siege' && g.defenseId !== undefined && api.unit(g.defenseId) && !own.has(g.defenseId);
+    if (threatened || targetAlive) { g.clearSince = undefined; continue; }
+    g.clearSince ??= tick;
+    if (tick - g.clearSince < (RELEASE_TICKS[g.purpose] ?? RELEASE_TICKS.base)) continue;
+    const execution = executeSpecial(api, { type: 'special', kind: 'evacuate_garrison', ids: [id], order: { type: api.OrderType.DeploySelected } });
+    if (!execution?.accepted) continue;
+    memory.garrisons.delete(id);
+    (memory.evacuatedAt ??= new Map()).set(id, tick);
+    emit({ kind: 'micro', tick, description: `撤出建筑 #${id}（${g.purpose === 'siege' ? '目标已清除' : '附近已无敌人'}），${building.garrison.count} 名步兵归队`, targetId: id, reason: `release_${g.purpose}` });
+  }
 }

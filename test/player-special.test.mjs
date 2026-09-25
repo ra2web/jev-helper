@@ -38,10 +38,12 @@ const api = {
     available: (queue) => ({ 0: ['AIRFIELD', 'NAVAL'], 1: ['WALL', 'DEF'], 2: ['ENG'], 4: ['JET'], 5: ['SHIP'] }[queue] ?? ['AIRFIELD', 'NAVAL', 'WALL', 'DEF', 'ENG', 'JET', 'SHIP']).map((name) => ({ name })),
   },
   map: { size: () => ({ width: 25, height: 25 }), visible: () => false,
-    tile: (x, y) => x === 18 && y === 10 ? { rx: x, ry: y, bridge: { id: 90 }, landType: 7 } : undefined },
+    tile: (x, y) => x === 18 && y === 10 ? { rx: x, ry: y, bridge: { id: 90, hitPoints: 200, maxHitPoints: 500 }, landType: 7 } : undefined },
 };
 const snapshot = { raw: { units: own, buildings: own.filter((u) => u.type === 2), army: own.filter((u) => u.type === 3 || u.name === 'TANK'), enemies: [enemy], base },
-  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0 } };
+  // The enemy tank on the bridge is 7 tiles from the yard: the base is under threat.
+  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0, nearbyEnemyCount: 1, baseUnderAttack: true } };
+// The bridge piece is damaged: since 0.6.0 repair is offered only with a reason (damage or a stuck attack).
 const memory = {};
 const groups = {};
 specialGroups(api, catalog, snapshot, memory, groups);

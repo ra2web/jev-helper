@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>对局数据面板</title><link rel="stylesheet" href="dashboard.css"></head>
+<body>
+<header class="top">
+ <div class="brand-mark">J</div>
+ <div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="dashboardTitle">对局数据面板</h1></div>
+ <div class="top-actions">
+  <div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div>
+  <button type="button" id="export-all" data-i18n="exportAll">导出全部数据</button>
+  <button type="button" id="clear-all" class="danger" data-i18n="clearAll">清空全部战绩</button>
+ </div>
+</header>
+<p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+<main>
+ <section class="intro"><p class="hint" data-i18n="dashboardIntro"></p><div id="summary" class="summary"></div></section>
+ <section class="list-section">
+  <div class="section-title"><h2 data-i18n="matchesTitle">对局战绩</h2><span id="matches-count" class="micro-label"></span></div>
+  <p id="matches-empty" class="empty" data-i18n="matchesEmpty" hidden></p>
+  <div class="table-wrap"><table id="match-table"><thead><tr><th data-i18n="colWhen">时间</th><th data-i18n="colLabel">标签 / 页面</th><th data-i18n="colSource">来源</th><th data-i18n="colOutcome">结果</th><th data-i18n="colDuration">时长</th><th data-i18n="colDecisions">回答</th><th data-i18n="colTokens">Token</th><th data-i18n="colCredits">结束资金</th><th data-i18n="colArmy">部队峰值</th><th data-i18n="colLosses">损失 / 击毁</th></tr></thead><tbody id="match-rows"></tbody></table></div>
+ </section>
+ <section id="detail" class="detail" hidden>
+  <div class="section-title"><h2 id="detail-title"></h2><span id="detail-outcome" class="micro-label"></span></div>
+  <div class="detail-grid">
+   <article class="card">
+    <h3 data-i18n="metaTitle">对局元信息</h3>
+    <div id="meta" class="facts"></div>
+    <label for="label" data-i18n="matchLabel">标签</label><input id="label" maxlength="80" spellcheck="false">
+    <label for="notes" data-i18n="matchNotes">备注</label><textarea id="notes" rows="3" maxlength="2000"></textarea>
+    <div class="row-actions"><button type="button" id="save-meta" data-i18n="saveMeta">保存标签与备注</button></div>
+    <div class="outcome-mark"><span data-i18n="matchMark">标记结果：</span><button type="button" id="mark-victory" data-i18n="matchOutcome_victory">胜利</button><button type="button" id="mark-defeat" data-i18n="matchOutcome_defeat">战败</button><button type="button" id="mark-clear" class="text-button" data-i18n="markClear">清除标记</button></div>
+   </article>
+   <article class="card">
+    <div class="metrics"><div><b id="m-duration">—</b><span data-i18n="matchDuration">对局时长</span></div><div><b id="m-decisions">—</b><span data-i18n="decisions">模型回答</span></div><div><b id="m-credits">—</b><span data-i18n="matchCreditsEnd">结束资金</span></div><div><b id="m-army">—</b><span data-i18n="colArmy">部队峰值</span></div></div>
+    <div id="facts" class="facts"></div>
+    <div class="row-actions"><button type="button" id="export-match" data-i18n="exportWithLog">导出这场（含日志）</button><button type="button" id="delete-match" class="danger text-button" data-i18n="deleteMatch">删除这场</button></div>
+   </article>
+  </div>
+  <div class="charts">
+   <article class="card chart-card"><h3 data-i18n="economyChart">经济趋势</h3><div class="legend"><span class="base" data-i18n="creditsLegend">现有资金</span><span class="own" data-i18n="freeLegend">扣除队列剩余投入</span></div><div id="c-economy" class="chart"></div></article>
+   <article class="card chart-card"><h3 data-i18n="decisionChart">决策趋势</h3><div class="legend"><span class="base" data-i18n="decisionLegend">累计有效模型回答</span></div><div id="c-decisions" class="chart"></div></article>
+   <article class="card chart-card"><h3 data-i18n="forceChart">兵力趋势</h3><div class="legend"><span class="own" data-i18n="ownUnitsLegend">我方单位</span><span class="base" data-i18n="ownBuildingsLegend">我方建筑</span><span class="enemy" data-i18n="enemyUnitsLegend">可见敌方单位</span></div><div id="c-force" class="chart"></div></article>
+   <article class="card chart-card"><h3 data-i18n="lossChart">战损累计</h3><div class="legend"><span class="base" data-i18n="builtLegend">我方新建</span><span class="enemy" data-i18n="lostLegend">我方损失</span><span class="own" data-i18n="destroyedLegend">击毁敌方</span></div><div id="c-loss" class="chart"></div></article>
+  </div>
+  <div class="detail-grid">
+   <article class="card"><h3 data-i18n="logGroups">各决策组等待率</h3><div class="table-wrap"><table><thead><tr><th></th><th data-i18n="colDecisions">回答</th><th>%</th><th data-i18n="colChoices">选择</th></tr></thead><tbody id="group-rows"></tbody></table></div></article>
+   <article class="card"><h3 data-i18n="timelineTitle">关键事件</h3><ol id="timeline" class="timeline"></ol></article>
+  </div>
+  <article class="card">
+   <div class="section-title small"><h3 data-i18n="decisionsTitle">决策记录</h3><span id="decisions-hint" class="micro-label"></span></div>
+   <div class="table-wrap"><table><thead><tr><th data-i18n="colTick">拍</th><th data-i18n="colChoices">选择</th><th data-i18n="colLatency">耗时</th></tr></thead><tbody id="decision-rows"></tbody></table></div>
+  </article>
+ </section>
+ <section class="card global-log">
+  <div class="section-title"><h2 data-i18n="logSection">全局决策日志</h2><span id="log-size" class="micro-label"></span></div>
+  <p class="hint" data-i18n="logSectionHint"></p>
+  <div id="log-stats" class="facts"></div>
+  <div class="row-actions"><button type="button" id="log-export" data-i18n="logExport">导出 JSON</button><button type="button" id="log-clear" class="text-button" data-i18n="logClear">清空日志</button></div>
+ </section>
+</main>
+<script type="module" src="dashboard.js"></script>
+</body></html>

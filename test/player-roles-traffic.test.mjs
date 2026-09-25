@@ -23,7 +23,8 @@ const api={ObjectType:{Building:2,Infantry:3,Vehicle:7,Aircraft:1},QueueType:{St
   ArmorType:{0:'None',1:'Flak',2:'Plate',3:'Light',4:'Medium',5:'Heavy',None:0,Heavy:5},LandType:{Clear:0,Water:7,Tiberium:9},
   units:r=>r==='self'?own:enemies,me:()=>({credits:5000,power:{total:200,drain:80}}),tick:()=>tick,time:()=>tick/15,
   production:{queues:()=>Array.from({length:6},(_,type)=>({type,size:0,maxSize:99,items:[]})),
-    available:q=>q===2||q===undefined?['BASIC','SPECIALIST','SCOUT'].map(name=>({name,type:3})):[]},
+    // A normal base with a vehicle factory: tanks are the army and infantry is support.
+    available:q=>q===2||q===undefined?['BASIC','SPECIALIST','SCOUT'].map(name=>({name,type:3})):q===3?[{name:'TANK',type:7}]:[]},
   map:{size:()=>({width:60,height:60}),visible:()=>true,tile:(x,y)=>x>=0&&y>=0&&x<60&&y<60?{rx:x,ry:y,landType:0}:undefined},
   canPlace:()=>true,inRange:()=>true,move:(...a)=>calls.push(['move',...a]),gather:(...a)=>calls.push(['gather',...a]),attack:(...a)=>calls.push(['attack',...a]),
 };
@@ -133,8 +134,11 @@ enemies=[];
 const offerBeforeWalls=api.production.available;
 api.production.available=q=>q===1?[...offerBeforeWalls(q),{name:'WALL',type:2}]:offerBeforeWalls(q);
 snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,{});
-const wallChoice=groups.defenses.actions.produce_WALL;
-assert.ok(wallChoice?.placement,'stable, funded defenses may add a wall at a legal site');
-assert.ok(trafficClearance({rx:wallChoice.placement.x,ry:wallChoice.placement.y},own.filter(u=>u.type===2),own,catalog),
-  'the final wall candidate must preserve refinery and factory access');
-console.log('Final wall candidate: legal placement and traffic access survive complete strategy filtering');
+// 0.6.0: without a base threat the defense question is no longer asked at all (a small model answered
+// "wait" every time), so peacetime walls are not offered; wall sites still keep factory access.
+assert.equal(groups.defenses,undefined,'no defense question in peacetime');
+const wallSite=chooseBuildingSite(api,catalog,'WALL',own,{});
+assert.ok(wallSite,'a wall still has a legal site');
+assert.ok(trafficClearance({rx:wallSite.x,ry:wallSite.y},own.filter(u=>u.type===2),own,catalog),
+  'a wall site must preserve refinery and factory access');
+console.log('Wall sites: no peacetime defense question; legal placement keeps traffic access');

@@ -15,7 +15,8 @@ test('telemetry preserves zeros, unknown values, visible counts and bounded posi
 test('sampling survives frequent reads, caps history, resets on clock rollback and does not alter decisions',()=>{
  let s={decisions:7};
  for(let i=0;i<1400;i++)s=recordObservation(s,summarize({tick:i,gameSeconds:i/15,self:{credits:1000-i}},i*1000),i*1000);
- assert.equal(s.decisions,7);assert.equal(s.history.length,HISTORY_LIMIT);assert.ok(s.history.every((p,i)=>i===0||p.at-s.history[i-1].at>=2000));
+ assert.equal(s.decisions,7);assert.ok(s.history.length<=HISTORY_LIMIT&&s.history.length>HISTORY_LIMIT/2,'bounded but not starved');assert.ok(s.history.every((p,i)=>i===0||p.at-s.history[i-1].at>=2000));
+ assert.equal(s.history[0].at,0,'the first sample survives thinning');assert.ok(1399000-s.history.at(-1).at<s.sampleMs,'the newest sample is at most one interval old');assert.ok(s.sampleMs>=8000,'the interval grew as the buffer filled');
  assert.equal(s.observation.credits,-399);assert.equal(s.history.at(-1).decisions,7);
  s=recordObservation(s,summarize({gameSeconds:0,self:{credits:10000}}),2000000);assert.equal(s.history.length,1);assert.equal(s.credits,10000);
 });
@@ -32,10 +33,11 @@ test('chart coordinates handle empty, constant-zero, negative values and missing
  const empty=chartGeometry([],['credits']);assert.equal(empty.max,1);
  const g=chartGeometry([{at:100,credits:0},{at:2100,credits:-100},{at:4100,credits:null},{at:NaN,credits:50}],['credits']);
  assert.equal(g.data.length,3);assert.equal(g.min,-100);assert.ok(Number.isFinite(g.y(0)));assert.equal(g.x(g.data[0]),38);assert.equal(g.x(g.data.at(-1)),328);
+ assert.equal(g.gapLimit,10000);assert.equal(chartGeometry(Array.from({length:10},(_,i)=>({at:i*30000,credits:i})),['credits']).gapLimit,120000,'thinned long matches still draw as a line');
 });
 test('all popup/help text keys have both languages; English brand and settings persist without leaking the key',async()=>{
  for(const [key,pair]of Object.entries(messages)){assert.equal(pair.length,2,key);assert.ok(pair.every(v=>typeof v==='string'&&v.length),key);assert.doesNotMatch(pair[1],/[\u3400-\u9fff]/,key);}
- for(const file of ['public/popup.html','public/help.html'])for(const match of (await fs.readFile(file,'utf8')).matchAll(/data-i18n="([^"]+)"/g))assert.ok(messages[match[1]],match[1]);
+ for(const file of ['public/popup.html','public/help.html','public/dashboard.html'])for(const match of (await fs.readFile(file,'utf8')).matchAll(/data-i18n="([^"]+)"/g))assert.ok(messages[match[1]],match[1]);
  assert.match(t('en','brand'),/WannaFire/);assert.equal(t('en','rangeWarning',{n:2}),'Threats beyond base defensive coverage: 2.');
  const settings=validateSettings({language:'en',apiKey:'test-secret'});assert.equal(publicSettings(settings).language,'en');assert.equal(publicSettings(settings).apiKey,undefined);
  assert.match(errorText('en','Jev 返回 HTTP 402，请检查账户额度或计费状态。'),/billing/);

@@ -9,7 +9,7 @@ const body={state:{tick:100},groups:{tactics:{instructions:'Choose',criteria:{wa
 function mockChrome(shared){
   const data=shared??{local:{settings:{...DEFAULTS,apiKey:'test-only-secret'}},session:{}};
   const messages=[],scripts=[],listeners={};
-  const area=name=>({setAccessLevel:async x=>{listeners[name+'Access']=x;},get:async key=>structuredClone(key===null?data[name]:{[key]:data[name][key]}),set:async values=>Object.assign(data[name],structuredClone(values)),remove:async key=>{delete data[name][key];}});
+  const area=name=>({setAccessLevel:async x=>{listeners[name+'Access']=x;},get:async key=>structuredClone(key===null?data[name]:{[key]:data[name][key]}),set:async values=>Object.assign(data[name],structuredClone(values)),remove:async key=>{for(const k of Array.isArray(key)?key:[key])delete data[name][k];}});
   const c={storage:{local:area('local'),session:area('session')},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:{addListener:fn=>{listeners.message=fn;}}},permissions:{contains:async()=>true},tabs:{get:async()=>({id:7,url:sender.url,title:'王二火大'}),query:async()=>[{id:7,url:sender.url}],sendMessage:async(id,m)=>{messages.push(m);return {ok:true};},onUpdated:{addListener:fn=>{listeners.updated=fn;}},onRemoved:{addListener:fn=>{listeners.removed=fn;}}},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{}},scripting:{executeScript:async x=>{scripts.push(x);return [{documentId:sender.documentId,result:x.args?.[0]==='start'?{running:true}:x.args?.[0]==='stop'?{running:false}:{available:true,running:!!data.session['session:7']?.running}}];}}};
   return {c,data,messages,scripts,listeners};
 }
@@ -245,4 +245,91 @@ test('a match that ended undefeated is labelled ended, and the popup can mark vi
   assert.equal(marked.outcome,'victory');assert.equal(marked.outcomeMarked,true);
   assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches[0].outcome,'victory');
   const cleared=await x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:''},extension);assert.equal(cleared.outcomeMarked,false);
+});
+
+test('settings save without site access; starting and testing then ask for authorization instead of re-entry',async()=>{
+  const x=mockChrome({local:{settings:{...DEFAULTS}},session:{}});
+  let granted=false;x.c.permissions.contains=async()=>granted;
+  const app=createBackground(x.c,{fetchImpl:async()=>answer()});
+  const saved=await app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://10.0.25.215:8742/v1',localKey:'lan-token'}},extension);
+  assert.equal(saved.permitted,false);assert.equal(saved.origin,'http://10.0.25.215/*');assert.equal(x.data.local.settings.localKey,'lan-token','the typed token is stored even before access is granted');
+  await assert.rejects(app.handle({type:'START',tabId:7},extension),/授权访问/);
+  await assert.rejects(app.handle({type:'TEST_CONNECTION'},extension),/授权访问/);
+  granted=true;
+  const view=await app.handle({type:'GET_SETTINGS'},extension);assert.equal(view.permitted,true);assert.equal(view.localKey,'lan-token');
+  await app.handle({type:'START',tabId:7},extension);assert.equal((await app.getSession(7)).running,true);
+});
+
+test('a finished match saves a battle report to Downloads/jev-reports unless disabled; the overlay shows both sides\' losses',async()=>{
+  const downloads=[];const shared={local:{settings:{...DEFAULTS,apiKey:'test-only-secret'}},session:{}};
+  const x=await setup(async()=>answer(),shared);x.c.downloads={download:async o=>{downloads.push(o);return 1;}};
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'observation',tick:101,credits:5000,state:{self:{credits:5000},ownArmyCount:6,gameSeconds:10},ledger:{ownUnits:6,ownBuildings:4,enemyUnits:2,enemyBuildings:1,ownBuilt:3,ownUnitsLost:2,ownBuildingsLost:1,enemyUnitsDestroyed:9,enemyBuildingsDestroyed:3}}},sender);
+  const overlay=await x.app.handle({type:'OVERLAY_STATUS'},sender);
+  assert.deepEqual(overlay.losses,{ownUnits:2,ownBuildings:1,enemyUnits:9,enemyBuildings:3});
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  assert.equal(downloads.length,1);assert.match(downloads[0].filename,/^jev-reports\/jev-report-\d{8}-\d{6}\.json$/);assert.equal(downloads[0].saveAs,false);
+  const body=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(downloads[0].url.split(',')[1]),ch=>ch.charCodeAt(0))));
+  assert.equal(body.match.decisions,1);assert.ok(body.entries.some(e=>e.kind==='decision'));assert.equal(body.stats.decisions,1);assert.doesNotMatch(JSON.stringify(body),/test-only-secret/);
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);assert.equal(matches[0].reportFile,downloads[0].filename);
+  await assert.rejects(x.app.handle({type:'SET_AUTO_REPORT',autoReport:false},sender));
+  assert.deepEqual(await x.app.handle({type:'SET_AUTO_REPORT',autoReport:false},extension),{autoReport:false});
+  await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
+  assert.equal(downloads.length,1,'no report when disabled');assert.equal((await x.app.handle({type:'GET_SETTINGS'},extension)).autoReport,false);
+});
+
+test('match metadata from the page is kept, each match stores its own log, and records can be labelled, deleted or cleared',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'meta',pageTitle:'王二火大 · 战役 3',url:'https://ra2web.github.io/#c3',me:{name:'Me',country:'America'},players:[{name:'Me',allied:true,combatant:true},{name:'AI',isAi:true,combatant:true}],playerCount:2,opponents:1,map:{width:120,height:100},startTick:1600,startTime:100,apiKey:'leak'}},sender);
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);const m=matches[0];
+  assert.equal(m.meta.pageTitle,'王二火大 · 战役 3');assert.equal(m.meta.players.length,2);assert.equal(m.meta.map.width,120);assert.equal(m.meta.opponents,1);assert.equal(m.meta.apiKey,undefined);
+  assert.equal(m.logEntries>=2,true);
+  const log=await x.app.handle({type:'MATCH_LOG_GET',id:m.id},extension);
+  assert.deepEqual(log.entries.map(e=>e.kind),['session','meta','decision','session']);assert.equal(log.entries[1].pageTitle,'王二火大 · 战役 3');
+  assert.ok(x.data.local[`matchlog:${m.id}`],'the per-match log is stored under its own key');
+  await assert.rejects(x.app.handle({type:'MATCH_LOG_GET',id:m.id},sender));await assert.rejects(x.app.handle({type:'MATCH_UPDATE',id:m.id,label:'x'},sender));await assert.rejects(x.app.handle({type:'MATCH_DELETE',id:m.id},sender));
+  const updated=await x.app.handle({type:'MATCH_UPDATE',id:m.id,label:'  第三关   首胜 ','notes':'note','outcome':'victory'},extension);
+  assert.equal(updated.label,'第三关 首胜');assert.equal(updated.notes,'note');assert.equal(updated.outcome,'victory');assert.equal(updated.outcomeMarked,true);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches[0].label,'第三关 首胜');
+  await assert.rejects(x.app.handle({type:'MATCH_UPDATE',id:'nope',label:'x'},extension));
+  await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
+  const two=(await x.app.handle({type:'MATCHES_LIST'},extension)).matches;assert.equal(two.length,2);
+  await x.app.handle({type:'MATCH_DELETE',id:m.id},extension);
+  const one=(await x.app.handle({type:'MATCHES_LIST'},extension)).matches;assert.equal(one.length,1);assert.notEqual(one[0].id,m.id);assert.equal(x.data.local[`matchlog:${m.id}`],undefined,'deleting a match removes its log');
+  await assert.rejects(x.app.handle({type:'MATCH_DELETE',id:m.id},extension));
+  await x.app.handle({type:'MATCHES_CLEAR'},extension);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches.length,0);assert.ok(!Object.keys(x.data.local).some(k=>k.startsWith('matchlog:')),'clearing removes every match log');
+});
+test('the history keeps at most 100 matches and drops the oldest logs with their records',async()=>{
+  const old=Array.from({length:100},(_,i)=>({id:`old-${i}`,startedAt:i,endedAt:i+1,durationMs:1,decisions:0}));
+  const shared={local:{settings:{...DEFAULTS,apiKey:'test-only-secret'},matches:old,...Object.fromEntries(old.map(m=>[`matchlog:${m.id}`,[{kind:'session'}]]))},session:{}};
+  const x=await setup(async()=>answer(),shared);
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const list=await x.app.handle({type:'MATCHES_LIST'},extension);
+  assert.equal(list.matches.length,100);assert.equal(list.matches.at(-1).id,'old-1','the oldest record was dropped');
+  assert.equal(x.data.local['matchlog:old-0'],undefined,'its log went with it');assert.ok(x.data.local['matchlog:old-1']);
+});
+
+test('external hosts are allowed by hand: until then a public plaintext address is refused, afterwards it is used',async()=>{
+  const x=mockChrome({local:{settings:{...DEFAULTS}},session:{}});
+  const app=createBackground(x.c,{fetchImpl:async()=>answer()});
+  await assert.rejects(app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://vps.example:8742/v1'}},extension),/允许的外部地址/);
+  await assert.rejects(app.handle({type:'ALLOW_HOST',host:'vps.example'},sender));
+  const allowed=await app.handle({type:'ALLOW_HOST',host:' HTTP://VPS.example:8742/v1 '},extension);assert.deepEqual(allowed.allowedHosts,['vps.example']);
+  const saved=await app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://vps.example:8742/v1'}},extension);assert.deepEqual(saved.allowedHosts,['vps.example']);
+  await app.handle({type:'START',tabId:7},extension);assert.equal((await app.getSession(7)).running,true);
+  await app.handle({type:'DISALLOW_HOST',host:'vps.example'},extension);
+  const s=await app.getSession(7);await assert.rejects(app.handle({type:'DECIDE',token:s.token,body},sender),/允许的外部地址/,'a removed host stops being used at once');
+  assert.deepEqual((await app.handle({type:'GET_SETTINGS'},extension)).allowedHosts,[]);
+});
+
+test('the data panel, opened in a tab, is trusted like the popup; game pages and other extensions are not',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const panel={id:'test-extension',frameId:0,url:'chrome-extension://test-extension/dashboard.html',tab:{id:9}};
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},panel);assert.equal(matches.length,1,'the panel sees the recorded match');
+  assert.ok((await x.app.handle({type:'GET_SETTINGS'},panel)).hasKey);
+  for(const bad of [{...panel,url:'https://staging.wangerhuoda.com/'},{...panel,id:'other-extension'},{...panel,frameId:1},{...panel,url:'https://evil.test/chrome-extension://test-extension/'}])await assert.rejects(x.app.handle({type:'MATCHES_LIST'},bad));
 });

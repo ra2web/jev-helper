@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jev 对局托管</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.4.4</span></div></header>
+<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><button type="button" id="open-dashboard" class="dashboard-button" data-i18n="openDashboard">数据面板 ↗</button><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.7.5</span></div></header>
 <main>
 <section class="battle">
  <div class="status-line"><span id="dot" class="dot"></span><strong id="status" data-i18n="connecting">正在连接游戏…</strong><span id="tick" class="tick"></span></div>
@@ -12,7 +12,8 @@
  <div class="actions"><button id="start" class="primary" disabled><span data-i18n="start">开启托管</span><span>↗</span></button><button id="stop" data-i18n="stop" disabled>停止</button></div>
 </section>
 <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
-<nav class="tabs" aria-label="Dashboard"><button id="tab-battlefield" data-panel="battlefield" data-i18n="battlefield" aria-pressed="true">战场</button><button id="tab-trends" data-panel="trends" data-i18n="trends" aria-pressed="false">趋势</button><button id="tab-matches" data-panel="matches" data-i18n="matches" aria-pressed="false">战绩</button><button id="tab-settings" data-panel="settings" data-i18n="settings" aria-pressed="false">设置</button></nav>
+<div id="permission-banner" class="notice permission" hidden><span id="permission-text"></span><button type="button" id="authorize" data-i18n="authorize">授权访问</button></div>
+<nav class="tabs" aria-label="Dashboard"><button id="tab-battlefield" data-panel="battlefield" data-i18n="battlefield" aria-pressed="true">战场</button><button id="tab-trends" data-panel="trends" data-i18n="trends" aria-pressed="false">趋势</button><button id="tab-settings" data-panel="settings" data-i18n="settings" aria-pressed="false">设置</button></nav>
 <section id="panel-battlefield" class="panel" aria-labelledby="tab-battlefield">
  <div class="section-title"><h2 data-i18n="situation">实时战场态势</h2><span id="freshness" class="micro-label"></span></div>
  <p id="no-battle" class="empty" data-i18n="noBattle">进入对局后显示战场态势。无需开启托管。</p>
@@ -34,45 +35,35 @@
  <article class="chart-card"><h2 data-i18n="lossChart">战损累计</h2><div class="legend"><span class="base" data-i18n="builtLegend">我方新建</span><span class="enemy" data-i18n="lostLegend">我方损失</span><span class="own" data-i18n="destroyedLegend">击毁敌方</span></div><div id="loss-chart" class="chart"></div><p class="hint" data-i18n="lossHint"></p></article>
  <p class="hint" data-i18n="historyNote"></p>
 </section>
-<section id="panel-matches" class="panel" aria-labelledby="tab-matches" hidden>
- <div class="section-title"><h2 data-i18n="matchesTitle">对局战绩</h2><span id="matches-count" class="micro-label"></span></div>
- <p class="hint" data-i18n="matchesHint"></p>
- <p id="matches-empty" class="empty" data-i18n="matchesEmpty" hidden></p>
- <ul id="match-list" class="match-list"></ul>
- <article id="match-detail" class="match-detail" hidden>
-  <div class="section-title small"><h3 id="match-title"></h3><span id="match-outcome" class="micro-label"></span></div>
-  <div class="metrics match-metrics"><div><b id="match-duration">—</b><span data-i18n="matchDuration">对局时长</span></div><div><b id="match-decisions">—</b><span data-i18n="decisions">模型回答</span></div><div><b id="match-credits">—</b><span data-i18n="matchCreditsEnd">结束资金</span></div></div>
-  <div id="match-facts" class="log-stats"></div>
-  <article class="chart-card"><h3 data-i18n="economyChart">经济趋势</h3><div class="legend"><span class="base" data-i18n="creditsLegend">现有资金</span><span class="own" data-i18n="freeLegend">扣除队列剩余投入</span></div><div id="match-economy" class="chart"></div></article>
-  <article class="chart-card"><h3 data-i18n="decisionChart">决策趋势</h3><div class="legend"><span class="base" data-i18n="decisionLegend">累计有效模型回答</span></div><div id="match-decision-chart" class="chart"></div></article>
-  <article class="chart-card"><h3 data-i18n="forceChart">兵力趋势</h3><div class="legend"><span class="own" data-i18n="ownUnitsLegend">我方单位</span><span class="base" data-i18n="ownBuildingsLegend">我方建筑</span><span class="enemy" data-i18n="enemyUnitsLegend">可见敌方单位</span></div><div id="match-force" class="chart"></div></article>
-  <article class="chart-card"><h3 data-i18n="lossChart">战损累计</h3><div class="legend"><span class="base" data-i18n="builtLegend">我方新建</span><span class="enemy" data-i18n="lostLegend">我方损失</span><span class="own" data-i18n="destroyedLegend">击毁敌方</span></div><div id="match-loss" class="chart"></div></article>
-  <div class="outcome-mark"><span data-i18n="matchMark">标记结果：</span><button type="button" id="mark-victory" data-i18n="matchOutcome_victory">胜利</button><button type="button" id="mark-defeat" data-i18n="matchOutcome_defeat">战败</button><button type="button" id="mark-clear" class="text-button" data-i18n="markClear">清除标记</button></div>
-  <div class="log-actions"><button type="button" id="match-export" data-i18n="matchExport">导出这场 JSON</button><button type="button" id="matches-clear" class="text-button" data-i18n="matchesClear">清空战绩</button></div>
- </article>
-</section>
 <section id="panel-settings" class="panel" aria-labelledby="tab-settings" hidden>
 <form id="settings">
  <div class="section-title"><h2 data-i18n="settingsTitle">连接与控制</h2><button type="button" id="clear-key" class="text-button" data-i18n="clearKey" hidden>清除密钥</button></div>
  <span class="field-label" id="provider-label" data-i18n="providerLabel">模型来源</span>
- <div class="provider" role="radiogroup" aria-labelledby="provider-label"><button type="button" id="provider-jev" data-provider="jev" role="radio" aria-checked="true" data-i18n="providerJev">Jev 云端</button><button type="button" id="provider-local" data-provider="local" role="radio" aria-checked="false" data-i18n="providerLocal">本地 Laya</button></div>
+ <div class="provider" role="radiogroup" aria-labelledby="provider-label"><button type="button" id="provider-jev" data-provider="jev" role="radio" aria-checked="true" data-i18n="providerJev">Jev 云端</button><button type="button" id="provider-local" data-provider="local" role="radio" aria-checked="false" data-i18n="providerLocal">本地 Laya</button><button type="button" id="provider-openai" data-provider="openai" role="radio" aria-checked="false" data-i18n="providerOpenai">OpenAI 兼容</button></div>
  <p id="provider-hint" class="hint"></p>
  <div id="fields-jev" class="provider-fields">
  <label for="api-key" data-i18n="apiKey">JEV 密钥</label><div class="secret"><input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="api-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-api-key" role="alert" hidden></p>
  <button id="import-config" type="button" class="text-button import-button" data-i18n="import">从本地 .env 配置导入</button><input id="config-file" type="file" hidden>
- <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required><p class="field-error" id="err-api-base" role="alert" hidden></p>
+ <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required><p class="field-error" id="err-api-base" role="alert" hidden></p><p class="field-warning" id="warn-api-base" hidden></p>
  </div>
  <div id="fields-local" class="provider-fields" hidden>
- <label for="local-base" data-i18n="localBase">本地服务地址</label><input id="local-base" type="url" spellcheck="false" required><p class="field-error" id="err-local-base" role="alert" hidden></p>
+ <label for="local-base" data-i18n="localBase">本地服务地址</label><input id="local-base" type="url" spellcheck="false" required><p class="field-error" id="err-local-base" role="alert" hidden></p><p class="field-warning" id="warn-local-base" hidden></p>
  <p class="hint" data-i18n="startHint"></p>
  <label for="local-key" data-i18n="localKey">本地访问令牌（可选）</label><div class="secret"><input id="local-key" name="local-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="local-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-local-key" role="alert" hidden></p>
+ </div>
+ <div id="fields-openai" class="provider-fields" hidden>
+ <label for="openai-base" data-i18n="apiBase">API 地址</label><input id="openai-base" type="url" spellcheck="false" required placeholder="https://api.openai.com/v1"><p class="field-error" id="err-openai-base" role="alert" hidden></p><p class="field-warning" id="warn-openai-base" hidden></p>
+ <label for="openai-key" data-i18n="openaiKey">API 密钥</label><div class="secret"><input id="openai-key" name="openai-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="openai-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-openai-key" role="alert" hidden></p>
+ <label for="openai-model" data-i18n="openaiModel">模型</label><div class="model-row"><select id="openai-model"></select><button type="button" id="fetch-models" data-i18n="fetchModels">获取模型列表</button></div><p class="field-error" id="err-openai-model" role="alert" hidden></p><p id="models-hint" class="hint" data-i18n="modelsHint"></p>
+ <label for="strategy-mode" data-i18n="strategyMode">决策方式</label><select id="strategy-mode"><option value="choices" data-i18n="strategy_choices">选择题</option><option value="commander" data-i18n="strategy_commander">指挥官（大模型自行决定打法）</option></select><p class="hint" data-i18n="strategyHint"></p>
  </div>
  <label for="hotkey" data-i18n="hotkey">托管快捷键</label><input id="hotkey" type="text" readonly aria-describedby="hotkey-hint"><p class="field-error" id="err-hotkey" role="alert" hidden></p><p id="hotkey-hint" class="hint" data-i18n="hotkeyHint"></p>
  <label for="objective" data-i18n="objective">本局目标（可选）</label><textarea id="objective" rows="2" maxlength="300" spellcheck="false"></textarea><p class="field-error" id="err-objective" role="alert" hidden></p><p class="hint" data-i18n="objectiveHint"></p>
  <label class="check"><input id="auto-camera" type="checkbox"><span data-i18n="autoCamera">自动跟随交战与基地镜头</span></label>
  <label class="check"><input id="show-overlay" type="checkbox" aria-describedby="overlay-hint"><span data-i18n="showOverlay">托管时显示悬浮状态窗</span></label><p id="overlay-hint" class="hint" data-i18n="overlayHint"></p>
- <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><div class="provider-fields" id="advanced-jev"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><p class="field-error" id="err-model" role="alert" hidden></p></div><div class="provider-fields" id="advanced-local" hidden><label for="local-model" data-i18n="localModel">本地模型名称</label><input id="local-model" spellcheck="false"><p class="field-error" id="err-local-model" role="alert" hidden></p><p class="hint" data-i18n="localModelHint"></p></div><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="field-error" id="err-budget" role="alert" hidden></p><p class="hint" data-i18n="budgetHint"></p></div></details>
- <section class="log" aria-labelledby="log-title"><div class="section-title"><h2 id="log-title" data-i18n="logTitle">决策日志</h2><span id="log-size" class="micro-label"></span></div><p class="hint" data-i18n="logHint"></p><div id="log-stats" class="log-stats"></div><div class="log-actions"><button type="button" id="log-export" data-i18n="logExport">导出 JSON</button><button type="button" id="log-clear" class="text-button" data-i18n="logClear">清空日志</button></div></section>
+ <label class="check"><input id="auto-report" type="checkbox" aria-describedby="report-hint"><span data-i18n="autoReport">对局结束后自动保存战报</span></label><p id="report-hint" class="hint" data-i18n="autoReportHint"></p>
+ <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><div class="provider-fields" id="advanced-jev"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><p class="field-error" id="err-model" role="alert" hidden></p></div><div class="provider-fields" id="advanced-openai" hidden><label for="openai-mode" data-i18n="openaiMode">调用方式</label><select id="openai-mode"><option value="tools" data-i18n="modeTools">函数调用（tool call，推荐）</option><option value="json" data-i18n="modeJson">JSON 输出（不支持函数调用时用）</option></select><p class="hint" data-i18n="openaiModeHint"></p></div><div class="provider-fields" id="advanced-local" hidden><label for="local-model" data-i18n="localModel">本地模型名称</label><input id="local-model" spellcheck="false"><p class="field-error" id="err-local-model" role="alert" hidden></p><p class="hint" data-i18n="localModelHint"></p></div><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="field-error" id="err-budget" role="alert" hidden></p><p class="hint" data-i18n="budgetHint"></p></div></details>
+ <details id="allowed-hosts-box"><summary data-i18n="allowedHosts">允许的外部地址</summary><div class="advanced"><p class="hint" data-i18n="allowedHostsHint"></p><ul id="allowed-hosts" class="chips"></ul><div class="allow-row"><input id="allow-host" spellcheck="false" autocomplete="off"><button type="button" id="allow-host-add" data-i18n="allowHost">允许</button></div><p class="field-error" id="err-allow-host" role="alert" hidden></p></div></details>
  <button class="save" id="save" type="submit" data-i18n="save">保存设置</button><button class="save test" id="test-connection" type="button" data-state="idle"><span class="spinner" aria-hidden="true"></span><span id="test-label" data-i18n="test">测试模型连接</span></button><p class="privacy" data-i18n="privacy"></p>
 </form>
 </section>

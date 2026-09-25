@@ -58,9 +58,10 @@ export function createOverlayView(){
     :focus-visible{outline:2px solid #d9b76f}
     .details{padding:0 12px 10px}.metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;border-top:1px solid #84999b33;padding-top:9px}
     .metrics b{font-size:18px;line-height:1.3;font-variant-numeric:tabular-nums;font-weight:600;display:block;white-space:nowrap}.metrics span{color:#aab8ba;font-size:10px}
+    .losses{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;border-top:1px solid #84999b33;margin-top:8px;padding-top:8px}.losses b{font-size:14px;font-weight:600;display:block;font-variant-numeric:tabular-nums}.losses span{color:#aab8ba;font-size:9px;line-height:1.3;display:block}.losses .own b{color:#edb0a5}.losses .enemy b{color:#91cbb1}
     .foot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-size:10px;color:#aab8ba}.shortcut{color:#d9b76f}.warning{color:#edba81;margin:7px 0 0;font-size:11px}
     [hidden]{display:none!important}
-  </style><section aria-label="Jev"><header><div class="drag" tabindex="0" role="group"><div class="brand"></div><div class="status"><i class="dot"></i><span class="status-text"></span></div></div><button type="button"></button></header><div class="details"><div class="metrics"><div><b id="decisions"></b><span id="decisions-label"></span></div><div><b id="credits"></b><span id="credits-label"></span></div><div><b id="latency"></b><span id="latency-label"></span></div></div><div class="foot"><span class="tick"></span><span class="shortcut"></span></div><p class="warning" hidden></p></div></section>`;
+  </style><section aria-label="Jev"><header><div class="drag" tabindex="0" role="group"><div class="brand"></div><div class="status"><i class="dot"></i><span class="status-text"></span></div></div><button type="button"></button></header><div class="details"><div class="metrics"><div><b id="decisions"></b><span id="decisions-label"></span></div><div><b id="credits"></b><span id="credits-label"></span></div><div><b id="latency"></b><span id="latency-label"></span></div></div><div class="losses"><div class="own"><b id="own-units"></b><span id="own-units-label"></span></div><div class="enemy"><b id="enemy-units"></b><span id="enemy-units-label"></span></div><div class="own"><b id="own-buildings"></b><span id="own-buildings-label"></span></div><div class="enemy"><b id="enemy-buildings"></b><span id="enemy-buildings-label"></span></div></div><div class="foot"><span class="tick"></span><span class="shortcut"></span></div><p class="warning" hidden></p></div></section>`;
   const $=selector=>root.querySelector(selector),handle=$('.drag'),button=$('button');
   let config,lastStatus,drag;
   function layout(){
@@ -77,6 +78,7 @@ export function createOverlayView(){
     button.textContent=collapsed?'+':'−';button.title=tr(collapsed?'overlayExpand':'overlayCollapse');button.setAttribute('aria-label',button.title);button.setAttribute('aria-expanded',String(!collapsed));
     $('.details').hidden=collapsed;
     for(const key of ['decisions','credits','latency'])$(`#${key}-label`).textContent=tr(key);
+    const l=status.losses;for(const [id,key,labelKey] of [['own-units','ownUnits','ownUnitsLost'],['enemy-units','enemyUnits','enemyUnitsKilled'],['own-buildings','ownBuildings','ownBuildingsLost'],['enemy-buildings','enemyBuildings','enemyBuildingsKilled']]){$(`#${id}`).textContent=l?format(l[key]):'—';$(`#${id}-label`).textContent=tr(labelKey);}
     $('#decisions').textContent=format(status.decisions??0);$('#credits').textContent=format(status.credits);$('#latency').textContent=Number.isFinite(status.latencyMs)?`${format(status.latencyMs)}ms`:'—';
     $('.tick').textContent=status.lastTick!=null?`TICK ${format(status.lastTick)}`:name.toUpperCase();
     $('.shortcut').textContent=`${config.hotkey} · ${tr('stop')}`;

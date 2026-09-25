@@ -7,7 +7,9 @@ export function chartGeometry(samples,keys){
  const values=data.flatMap(p=>keys.map(k=>p[k]).filter(valid));
  const min=Math.min(0,...values),max=Math.max(1,...values),span=max-min;
  const from=data[0]?.at??0,to=Math.max(from+2000,data.at(-1)?.at??0);
- return {data,min,max,x:p=>38+(p.at-from)/(to-from)*290,y:v=>92-(v-min)/span*76};
+ const gaps=data.slice(1).map((p,i)=>p.at-data[i].at).filter(g=>g>0).sort((a,b)=>a-b),median=gaps[Math.floor(gaps.length/2)]??0;
+ // A break in the line means the data really stopped (a pause), not that the sampling interval grew.
+ return {data,min,max,gapLimit:Math.max(10000,median*4),x:p=>38+(p.at-from)/(to-from)*290,y:v=>92-(v-min)/span*76};
 }
 const format=(n,lang)=>valid(n)?Math.round(n).toLocaleString(lang):'—';
 const time=(n,lang)=>new Date(n).toLocaleTimeString(lang,{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -20,7 +22,7 @@ export function drawChart(root,samples,series,language,title){
  if(!g.data.length){svg.append(el('text',{x:184,y:60,'text-anchor':'middle',class:'axis'},t(language,'chartEmpty')));root.append(svg);return;}
  for(const s of series){
   let d='',previous;
-  for(const p of g.data){if(!valid(p[s.key])){previous=null;continue;}d+=`${previous&&p.at-previous.at<=10000?'L':'M'}${g.x(p).toFixed(2)},${g.y(p[s.key]).toFixed(2)} `;previous=p;}
+  for(const p of g.data){if(!valid(p[s.key])){previous=null;continue;}d+=`${previous&&p.at-previous.at<=g.gapLimit?'L':'M'}${g.x(p).toFixed(2)},${g.y(p[s.key]).toFixed(2)} `;previous=p;}
   svg.append(el('path',{d,stroke:s.color,'stroke-width':2,fill:'none','stroke-linejoin':'round'}));
   const last=g.data.findLast(p=>valid(p[s.key]));if(last)svg.append(el('circle',{cx:g.x(last),cy:g.y(last[s.key]),r:3,fill:s.color}));
  }

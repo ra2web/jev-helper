@@ -1,4 +1,4 @@
-import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField} from './shared.mjs';
+import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField,plaintextPublic,normalizeHost,PROVIDER_FIELDS} from './shared.mjs';
 import {importSettings} from './import-settings.mjs';
 import {t,errorText,messages,officialWebsiteUrl} from './i18n.mjs';
 import {drawChart,drawPositions} from './charts.mjs';
@@ -6,9 +6,10 @@ const $=id=>document.getElementById(id);
 let tabId,config={...DEFAULTS,hasKey:false},lastStatus,dirty=false,refreshing=false,activePanel='battlefield',noticeState;
 const tr=(key,vars)=>t(config.language,key,vars);
 const providerName=()=>config.providerName||'Jev';
-let testState={state:'idle'};
+let testState={state:'idle'},models=[];
 // Inline field errors (Material style): red outline plus a message under the input.
-const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',hotkey:'hotkey',maxDecisions:'budget',objective:'objective'};
+const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',openaiKey:'openai-key',openaiBase:'openai-base',openaiModel:'openai-model',hotkey:'hotkey',maxDecisions:'budget',objective:'objective'};
+const PROVIDER_IDS=['jev','local','openai'],KEY_FLAGS={jev:'hasKey',local:'hasLocalKey',openai:'hasOpenaiKey'};
 const fieldMessages={};
 function fieldError(field,message){
  const id=FIELD_IDS[field];if(!id)return false;const input=$(id),slot=$(`err-${id}`);
@@ -30,67 +31,40 @@ function showFieldErrors(errors){
 function reportError(message){
  const field=errorField(message,selectedProvider());
  if(field&&fieldError(field,message)){$(FIELD_IDS[field]).focus();return true;}
+ if(/授权|访问权限/.test(message)&&config.permitted===false){renderPermission();$('authorize').focus();notice(message);return true;}
  notice(message);return false;
 }
-let logStatsCache,matchList=[],matchSelected,matchDetail;
-const fmtDuration=ms=>{const s=Math.max(0,Math.round(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;};
-const outcomeText=m=>tr(messages[`matchOutcome_${m.outcome}`]?`matchOutcome_${m.outcome}`:'matchOutcome_');
-function renderMatchList(){
- const ul=$('match-list');ul.replaceChildren();$('matches-count').textContent=matchList.length?String(matchList.length):'';$('matches-empty').hidden=matchList.length>0;
- for(const m of matchList){const li=document.createElement('li'),btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-pressed',String(m.id===matchSelected));
-  const row=document.createElement('span');row.className='row';const when=document.createElement('span');when.textContent=new Date(m.startedAt).toLocaleString(config.language,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});const outcome=document.createElement('span');outcome.textContent=outcomeText(m);row.append(when,outcome);
-  const sub=document.createElement('span');sub.className='sub';sub.textContent=`${fmtDuration(m.durationMs)} · ${m.providerName||'Jev'} · ${tr('decisions')} ${format(m.decisions)} · ${tr('matchCreditsEnd')} ${format(m.credits?.end)}`;
-  btn.append(row,sub);btn.addEventListener('click',()=>selectMatch(m.id));li.append(btn);ul.append(li);}
+// Settings are saved before the browser is asked for site access, so a dismissed prompt never
+// costs the user what they typed. The banner offers the grant again with one click.
+function renderPermission(){const banner=$('permission-banner');const need=config.permitted===false;banner.hidden=!need;if(need)$('permission-text').textContent=tr('permissionNeeded',{origin:config.origin});}
+async function authorize(){
+ $('authorize').disabled=true;
+ try{const granted=await chrome.permissions.request({origins:[config.origin]});config=await rpc({type:'GET_SETTINGS'});renderPermission();if(granted&&config.permitted)notify('authorized',true,{origin:config.origin});await refresh();}
+ catch(e){notice(e.message);}finally{$('authorize').disabled=false;}
 }
-function renderMatchDetail(m){
- matchDetail=m;$('match-detail').hidden=!m;if(!m)return;
- $('match-title').textContent=new Date(m.startedAt).toLocaleString(config.language,{hour12:false});$('match-outcome').textContent=outcomeText(m);
- $('match-duration').textContent=fmtDuration(m.durationMs);$('match-decisions').textContent=format(m.decisions);$('match-credits').textContent=format(m.credits?.end);
- const box=$('match-facts');box.replaceChildren();const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
- line(tr('matchFacts',{provider:m.providerName||'Jev',model:m.model||'—',requests:m.requests,failures:m.failures,avg:m.latencyAvg??'—',game:m.gameSeconds!=null?fmtDuration(m.gameSeconds*1000):'—'}));
- line(tr('matchActions',{accepted:m.acceptedActions,waits:m.waits,army:format(m.armyMax),start:format(m.credits?.start),end:format(m.credits?.end),max:format(m.credits?.max)}));
- const produced=Object.entries(m.produced??{}).map(([k,v])=>`${k}×${v}`).join('，');line(produced?tr('logProduce',{list:produced}):tr('logNoProduce'));
- const groups=Object.entries(m.groups??{}).map(([id,g])=>`${id} ${g.waitRate}%`).join('，');if(groups)line(tr('matchGroups',{list:groups}));
- if(m.objective)line(tr('matchObjective',{objective:m.objective}));
- line(tr('matchReason',{reason:messages[m.reason]?tr(m.reason):m.reason||'—'}));
- drawChart($('match-economy'),m.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
- drawChart($('match-decision-chart'),m.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
- drawChart($('match-force'),m.history??[],[{key:'ownUnits',label:'ownUnitsLegend',color:'#91cbb1'},{key:'ownBuildings',label:'ownBuildingsLegend',color:'#d9b76f'},{key:'enemyUnits',label:'enemyUnitsLegend',color:'#ed9383'}],config.language,tr('forceChart'));
- drawChart($('match-loss'),m.history??[],[{key:'ownBuilt',label:'builtLegend',color:'#d9b76f'},{key:'ownLost',label:'lostLegend',color:'#ed9383'},{key:'enemyDestroyed',label:'destroyedLegend',color:'#91cbb1'}],config.language,tr('lossChart'));
- for(const [id,value] of [['mark-victory','victory'],['mark-defeat','defeat']])$(id).setAttribute('aria-pressed',String(m.outcome===value&&m.outcomeMarked===true));
+// Explicitly allowed external hosts: shown as chips, added with one click (which also requests access).
+function renderAllowedHosts(){
+ const ul=$('allowed-hosts');ul.replaceChildren();
+ for(const host of config.allowedHosts??[]){const li=document.createElement('li'),text=document.createElement('span'),btn=document.createElement('button');text.textContent=host;btn.type='button';btn.textContent='×';btn.title=tr('removeHost');btn.setAttribute('aria-label',`${tr('removeHost')} ${host}`);
+  btn.addEventListener('click',async()=>{try{config={...config,...await rpc({type:'DISALLOW_HOST',host})};renderAllowedHosts();notify('hostRemoved',true,{host});}catch(e){notice(e.message);}});li.append(text,btn);ul.append(li);}
+ $('allow-host').placeholder=tr('allowHostPlaceholder');
 }
-for(const [id,outcome] of [['mark-victory','victory'],['mark-defeat','defeat'],['mark-clear','']])$(id).addEventListener('click',async()=>{
- if(!matchDetail)return;try{const m=await rpc({type:'MATCH_SET_OUTCOME',id:matchDetail.id,outcome});matchList=matchList.map(x=>x.id===m.id?{...x,outcome:m.outcome,outcomeMarked:m.outcomeMarked}:x);renderMatchList();renderMatchDetail(m);notify('matchMarked',true,{outcome:outcomeText(m)});}catch(e){notice(e.message);}
-});
-async function selectMatch(id){matchSelected=id;renderMatchList();try{renderMatchDetail(await rpc({type:'MATCH_GET',id}));}catch(e){notice(e.message);}}
-async function refreshMatches(){
- try{const {matches}=await rpc({type:'MATCHES_LIST'});matchList=matches;if(!matchList.some(m=>m.id===matchSelected))matchSelected=matchList[0]?.id;renderMatchList();
-  if(matchSelected)renderMatchDetail(await rpc({type:'MATCH_GET',id:matchSelected}));else renderMatchDetail(undefined);}
- catch(e){notice(e.message);}
+async function allowHost(){
+ const input=$('allow-host'),slot=$('err-allow-host');slot.hidden=true;input.classList.remove('invalid');
+ let host;try{host=normalizeHost(input.value);}catch(e){slot.textContent=errorText(config.language,e.message);slot.hidden=false;input.classList.add('invalid');input.focus();return;}
+ $('allow-host-add').disabled=true;
+ try{
+  try{await chrome.permissions.request({origins:[`*://${host}/*`]});}catch{}
+  config={...config,...await rpc({type:'ALLOW_HOST',host})};input.value='';renderAllowedHosts();notify('hostAllowed',true,{host});
+  clearFieldError('localBase');clearFieldError('apiBase');clearFieldError('openaiBase');
+ }catch(e){notice(e.message);}finally{$('allow-host-add').disabled=false;}
 }
-function renderLogStats(data){
- logStatsCache=data;const box=$('log-stats');box.replaceChildren();
- const s=data?.stats;$('log-size').textContent=data?.chars?tr('logSize',{kb:Math.round(data.chars/1024)}):'';
- if(!s||!s.entries){const p=document.createElement('p');p.textContent=tr('logEmpty');box.append(p);$('log-export').disabled=true;$('log-clear').disabled=true;return;}
- $('log-export').disabled=false;$('log-clear').disabled=false;
- const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
- line(tr('logSummary',{entries:s.entries,sessions:s.sessions,decisions:s.decisions,failures:s.failures,avg:s.latency.avg??'—'}));
- const reasons=Object.entries(s.actions.skippedReasons).slice(0,3).map(([k,v])=>`${k} ${v}`).join('，');
- line(tr('logActions',{accepted:s.actions.accepted,waits:s.actions.waits,skipped:s.actions.skipped,reasons:reasons?`（${reasons}）`:''}));
- const produce=Object.entries(s.actions.acceptedProduce).map(([k,v])=>`${k}×${v}`).join('，');
- line(produce?tr('logProduce',{list:produce}):tr('logNoProduce'));
- const groups=Object.entries(s.groups);
- if(groups.length){line(tr('logGroups'));const ul=document.createElement('ul');for(const [id,g] of groups){const li=document.createElement('li');li.textContent=tr('logGroupLine',{id,asked:g.asked,rate:g.waitRate,options:g.avgOptions,confidence:g.avgConfidence});ul.append(li);}box.append(ul);}
-}
-async function refreshLog(){try{renderLogStats(await rpc({type:'LOG_STATS'}));}catch(e){notice(e.message);}}
-function downloadJson(name,data){
- const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
- a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
-}
+// Plain HTTP to a public address is allowed but flagged under the field; private networks stay quiet.
+function renderPlaintextWarnings(){for(const id of ['api-base','local-base','openai-base']){const warn=$(`warn-${id}`),show=plaintextPublic($(id).value);warn.hidden=!show;if(show)warn.textContent=tr('plaintextWarning');}}
 function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
-const selectedProvider=()=>$('provider-local').getAttribute('aria-checked')==='true'?'local':'jev';
+const selectedProvider=()=>document.querySelector('[data-provider][aria-checked="true"]')?.dataset.provider??'jev';
 const rpc=async message=>{const r=await chrome.runtime.sendMessage(message);if(!r?.ok)throw new Error(r?.error||'插件后台未响应。');return r.value;};
 const format=n=>typeof n==='number'&&Number.isFinite(n)?Math.round(n).toLocaleString(config.language):'—';
 function notice(text,success=false,key,vars){noticeState={text,success,key,vars};$('notice').textContent=key?tr(key,vars):errorText(config.language,text);$('notice').classList.toggle('success',success);$('notice').hidden=!text&&!key;}
@@ -106,22 +80,45 @@ function translate(){
  if(testState.state!=='idle')showTest(testState.state,testState.key,testState.vars);
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
- if(logStatsCache)renderLogStats(logStatsCache);
- if(activePanel==='matches'){renderMatchList();if(matchDetail)renderMatchDetail(matchDetail);}
+ renderPermission();
  if(lastStatus)displayStatus(lastStatus);
 }
-function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
+function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('openai-key').placeholder=tr('openaiKeyEmpty');$('clear-key').hidden=!config[KEY_FLAGS[selectedProvider()]];renderModels($('openai-model').value);}
 // Only the selected source's fields are shown; both sets stay saved.
 function showProvider(provider){
  for(const btn of document.querySelectorAll('[data-provider]'))btn.setAttribute('aria-checked',btn.dataset.provider===provider);
- for(const id of ['jev','local']){$(`fields-${id}`).hidden=id!==provider;$(`advanced-${id}`).hidden=id!==provider;}
- $('provider-hint').textContent=tr(provider==='local'?'providerLocalHint':'providerJevHint');
- $('clear-key').hidden=!(provider==='local'?config.hasLocalKey:config.hasKey);
+ for(const id of PROVIDER_IDS){$(`fields-${id}`).hidden=id!==provider;$(`advanced-${id}`).hidden=id!==provider;}
+ $('provider-hint').textContent=tr({local:'providerLocalHint',openai:'providerOpenaiHint'}[provider]??'providerJevHint');
+ $('clear-key').hidden=!config[KEY_FLAGS[provider]];
+}
+// The OpenAI model is picked from the service's own list; the saved choice stays selectable even before a reload.
+function renderModels(selected){
+ const select=$('openai-model'),ids=[...new Set([...models,...(selected?[selected]:[])])];
+ const option=(value,text)=>{const o=document.createElement('option');o.value=value;o.textContent=text;return o;};
+ select.replaceChildren(...(ids.length?ids.map(id=>option(id,id)):[option('',tr('modelPlaceholder'))]));
+ select.value=selected&&ids.includes(selected)?selected:ids[0]??'';
+}
+async function fetchModels(){
+ const base=$('openai-base').value.trim(),apiKey=$('openai-key').value.trim(),btn=$('fetch-models');
+ clearFieldError('openaiBase');clearFieldError('openaiModel');
+ const errors=fieldErrors({provider:'openai',openaiBase:base,openaiKey:apiKey,openaiModel:'',allowedHosts:config.allowedHosts,hotkey:config.hotkey,maxDecisions:1});
+ if(errors.openaiBase){showFieldErrors({openaiBase:errors.openaiBase});return;}
+ btn.disabled=true;btn.textContent=tr('modelsLoading');
+ try{
+  // Access to that address is asked for here, inside the click, so the list can load before saving.
+  try{await chrome.permissions.request({origins:[originPattern(base)]});}catch{}
+  const result=await rpc({type:'LIST_MODELS',base,apiKey});
+  const before=$('openai-model').value;models=result.models;renderModels(before||config.openaiModel);
+  if($('openai-model').value!==config.openaiModel||base!==config.openaiBase){dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);}
+  $('models-hint').textContent=tr('modelsLoaded',{n:result.models.length});
+ }catch(e){const field=errorField(e.message,'openai');if(/授权|访问权限/.test(e.message))notice(e.message);else{fieldError(field||'openaiModel',e.message);$(FIELD_IDS[field||'openaiModel']).focus();}}
+ finally{btn.disabled=false;btn.textContent=tr('fetchModels');}
 }
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
+ $('openai-base').value=config.openaiBase??DEFAULTS.openaiBase;$('openai-key').value=config.openaiKey??'';$('openai-mode').value=config.openaiMode==='json'?'json':'tools';$('strategy-mode').value=config.strategyMode==='commander'?'commander':'choices';models=config.openaiModels??[];renderModels(config.openaiModel);
  // Stored keys are shown masked; the eye button reveals them on demand.
- $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
+ $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);renderPlaintextWarnings();renderAllowedHosts();$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -151,6 +148,7 @@ function renderCharts(s){
 function eventText(e){
  if(config.language!=='en')return e.text;
  const key=`event_${e.kind}`,name=tr(messages[key]?key:'event_other');
+ if(e.kind==='command')return `${name} · ${e.choice||''}`;
  if(e.kind==='action')return `${name} · ${e.choice||e.actionType||''} · ${tr(e.reason==='wait'?'waitLabel':e.accepted?'acceptedLabel':'skippedLabel')}`;
  if(e.kind==='stop'&&messages[e.reason])return `${name} · ${tr(e.reason)}`;
  return `${name}${e.choice?' · '+e.choice:''}`;
@@ -170,18 +168,8 @@ async function refresh(){if(tabId===undefined||refreshing)return;refreshing=true
 for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener('click',()=>{
  activePanel=btn.dataset.panel;
  for(const other of document.querySelectorAll('[data-panel]')){const on=other===btn;other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}
- if(activePanel==='settings')refreshLog();
- if(activePanel==='matches')refreshMatches();
  if(lastStatus)displayStatus(lastStatus);
 });
-$('log-export').addEventListener('click',async()=>{
- $('log-export').disabled=true;
- try{const data=await rpc({type:'LOG_EXPORT'});const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-log-${stamp}.json`;downloadJson(file,data);notify('logExported',true,{file});}
- catch(e){notice(e.message);}finally{$('log-export').disabled=false;}
-});
-$('match-export').addEventListener('click',()=>{if(!matchDetail)return;const stamp=new Date(matchDetail.startedAt).toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-match-${stamp}.json`;downloadJson(file,matchDetail);notify('matchExported',true,{file});});
-$('matches-clear').addEventListener('click',async()=>{try{await rpc({type:'MATCHES_CLEAR'});matchSelected=undefined;notify('matchesCleared',true);await refreshMatches();}catch(e){notice(e.message);}});
-$('log-clear').addEventListener('click',async()=>{try{await rpc({type:'LOG_CLEAR'});notify('logCleared',true);await refreshLog();}catch(e){notice(e.message);}});
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
@@ -198,6 +186,7 @@ $('config-file').addEventListener('change',async()=>{
 $('test-connection').addEventListener('click',async()=>{
  if(dirty){showTest('fail','saveFirst');return;}
  if(selectedProvider()==='jev'&&!$('api-key').value.trim()){showFieldErrors({apiKey:'请输入 JEV 密钥。'});return;}
+ if(selectedProvider()==='openai'&&!$('openai-model').value){showFieldErrors({openaiModel:'请先获取模型列表并选择模型。'});return;}
  notice('');showTest('testing','testing',{name:providerName()});
  try{const result=await rpc({type:'TEST_CONNECTION'});showTest('ok','testOk',{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}
  catch(e){showTest('idle');if(!reportError(e.message))showTest('fail','testFail',{error:errorText(config.language,e.message)});}
@@ -207,22 +196,37 @@ $('show-overlay').addEventListener('change',async()=>{
  try{const result=await rpc({type:'SET_OVERLAY',showOverlay:input.checked});config.showOverlay=result.showOverlay;notify(config.showOverlay?'overlayEnabled':'overlayDisabled',true);}
  catch(e){input.checked=config.showOverlay;notice(e.message);}finally{input.disabled=false;}
 });
-$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
+$('auto-report').addEventListener('change',async()=>{
+ const input=$('auto-report');input.disabled=true;
+ try{const result=await rpc({type:'SET_AUTO_REPORT',autoReport:input.checked});config.autoReport=result.autoReport;notify(config.autoReport?'autoReportOn':'autoReportOff',true);}
+ catch(e){input.checked=config.autoReport!==false;notice(e.message);}finally{input.disabled=false;}
+});
+$('settings').addEventListener('input',e=>{if(e.target.id==='api-base'||e.target.id==='local-base')renderPlaintextWarnings();if(e.target.id==='show-overlay'||e.target.id==='auto-report')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
 for(const eye of document.querySelectorAll('[data-reveal]'))eye.addEventListener('click',()=>{const input=$(eye.dataset.reveal),show=input.type==='password';input.type=show?'text':'password';eye.setAttribute('aria-pressed',String(show));eye.title=tr(show?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);input.focus();});
 $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;clearFieldError('hotkey');if(testState.state!=='idle')showTest('idle');$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
-  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true})))return;
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),openaiKey:$('openai-key').value.trim(),openaiBase:$('openai-base').value.trim(),openaiModel:$('openai-model').value,openaiMode:$('openai-mode').value,strategyMode:$('strategy-mode').value,openaiModels:models,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
+  input.allowedHosts=config.allowedHosts??[];
+  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true}))){if(['localBase','apiBase','openaiBase'].some(f=>fieldMessages[f]?.includes('允许')))$('allowed-hosts-box').open=true;return;}
   validateSettings(input);
-  if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
-  config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();notify('saved',true);await refresh();
+  config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();
+  if(!config.permitted){
+   let granted=false;try{granted=await chrome.permissions.request({origins:[config.origin]});}catch{}
+   config=await rpc({type:'GET_SETTINGS'});
+   if(!granted||!config.permitted){renderPermission();notify('savedUnauthorized',false,{origin:config.origin});await refresh();return;}
+  }
+  renderPermission();notify('saved',true);await refresh();
  }catch(error){reportError(error.message);}
 });
-$('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;config.localKey='';$('local-key').value='';}else{config.hasKey=false;config.apiKey='';$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
+$('authorize').addEventListener('click',authorize);
+$('fetch-models').addEventListener('click',fetchModels);
+$('allow-host-add').addEventListener('click',allowHost);$('allow-host').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();allowHost();}});$('allow-host').addEventListener('input',()=>{$('err-allow-host').hidden=true;$('allow-host').classList.remove('invalid');});
+$('open-dashboard').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL('dashboard.html')}));
+$('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider(),field=PROVIDER_FIELDS[provider].key;await rpc({type:'CLEAR_KEY',provider});config[KEY_FLAGS[provider]]=false;config[field]='';$(FIELD_IDS[field]).value='';keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}
 });
-try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();await refreshLog();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
+try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
 const timer=setInterval(()=>refresh().catch(e=>{if(lastStatus)displayStatus({...lastStatus,liveObservation:false});notice(e.message);}),1500);window.addEventListener('pagehide',()=>clearInterval(timer),{once:true});

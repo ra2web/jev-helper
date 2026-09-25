@@ -5,6 +5,7 @@
 - [API 文档](player-console-api.md)：战场查询、生产与单位命令、部署、射程、组合行动和本地摄像机。
 - [完整类型声明](../werhd-player-api.d.ts)：`PlayerConsolePublicApi`、查询结果、命令类型、公开枚举和 `Window.werhd`。
 - [基础玩家脚本](examples/werhd-user-script.mjs)：文档中链接的独立接入示例。
+- [希望游戏开放的接口](game-api-requests.md)：扩展这边整理的接口需求草案（生命周期、战役目标与提示、事件、命令回执、观察数据），供与作者沟通。
 
 这三份文件按上游原始路径与内容保存，不参与扩展打包。运行时 `window.werhd` 仍由游戏提供，扩展的策略和传输实现继续维护在 `src/`。
 

@@ -20,7 +20,7 @@ function world({ own, enemies, offers, tick = 3000, queues = [] }) {
     map:{size:()=>({width:80,height:80}),visible:(x,y)=>x<50,tile:(x,y)=>({rx:x,ry:y,landType:0})}, canPlace:()=>true,
     production:{queues:()=>Array.from({length:6},(_,type)=>({type,size:queues.filter(q=>q.type===type).length,maxSize:99,items:queues.filter(q=>q.type===type)})),
       available:q=>q===undefined?Object.values(offers).flat():(offers[q]??[])},
-    weaponVs:()=>undefined, inRange:()=>false, attack(){}, move(){}, attackMove(){}, deploy(){return true;},
+    weaponVs:()=>undefined, inRange:()=>false, attack(){}, move(){}, attackMove(){}, deploy(){return true;}, order(){return true;}, OrderType:{Move:1,Attack:2,Occupy:8,Repair:9,DeploySelected:10},
   };
   const memory = { frontiers:new Map(), enemyBuildings:new Map(), orders:new Map(), postureOrders:new Map(), specialOrders:new Map(), specialTargets:new Map(), plannedSites:new Map(), observedSpecial:new Map(), repairing:new Set(), lastMaintenance:tick, lastMicroReport:-1000 };
   return { api, memory };
@@ -61,8 +61,13 @@ test('with no production at all, whatever exists attacks immediately; a stalled 
   const snap=collectState(bare.api,catalog);const groups=candidateGroups(bare.api,catalog,snap,bare.memory);
   assert.equal(snap.state.forceReadiness.ready,true);assert.equal(snap.state.forceReadiness.threshold,1);assert.match(snap.state.forceReadiness.reason,/nothing can be produced/);
   assert.ok(groups.tactics.actions.assault_900);
-  const stalled=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
-  stalled.memory.forceProgress={count:2,tick:10000-FORCE_STALL_TICKS};
+  // Two survivors of a stalled force do not attack while production works: that is feeding units in.
+  const trickle=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
+  trickle.memory.forceProgress={count:2,tick:10000-FORCE_STALL_TICKS};
+  const s1=collectState(trickle.api,catalog);const g1=candidateGroups(trickle.api,catalog,s1,trickle.memory);
+  assert.equal(s1.state.forceReadiness.ready,false);assert.ok(!g1.tactics.actions.assault_900,'no assault with two units');
+  const stalled=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25),unit(12,'TANK',7,27,25),unit(13,'TANK',7,28,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
+  stalled.memory.forceProgress={count:4,tick:10000-FORCE_STALL_TICKS};
   const s2=collectState(stalled.api,catalog);const g2=candidateGroups(stalled.api,catalog,s2,stalled.memory);
   assert.equal(s2.state.forceReadiness.ready,true);assert.match(s2.state.forceReadiness.reason,/has not grown/);assert.ok(g2.tactics.actions.assault_900);
   const growing=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25),unit(12,'TANK',7,27,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
@@ -83,4 +88,46 @@ test('a seen enemy building no longer ends scouting, and the mission objective r
   assert.match(snap.state.objective,/Mission objective: Destroy the Pentagon/);
   assert.equal(snap.state.forceGoal.ready,false);assert.equal(snap.state.forceGoal.attackThreshold,ATTACK_FORCE_SIZE);
   const r=forceReadiness(api,catalog,snap.state,snap.raw.army,[own[2]],memory);assert.equal(r.groundVehicles,1);assert.equal(r.combatUnits,2);
+});
+
+test('a losing exchange or a stalled assault escalates: the force regroups to a larger size and every other arm is pointed at the target', () => {
+  const own=[...base,unit(2,'FACTORY',2,22,22),...Array.from({length:8},(_,i)=>unit(10+i,'TANK',7,25+i,25))];
+  catalog.HOUSE={label:'House'};
+  const civilian={...unit(950,'HOUSE',2,43,44),primaryWeapon:undefined,garrison:{canOccupy:true,count:0,capacity:5,unitIds:[]}};
+  const { api, memory } = world({ own, enemies:[pentagon,civilian], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
+  let snap=collectState(api,catalog);let groups=candidateGroups(api,catalog,snap,memory);
+  assert.equal(snap.state.forceReadiness.ready,true);assert.ok(groups.tactics.actions.assault_900);assert.equal(snap.state.combatAssessment.level,0);
+  // Six losses for one kill inside the window while an assault on the Pentagon is running.
+  memory.mission={mode:'attack',targetId:900,ids:[10,11],x:45,y:45,since:9900};
+  memory.combatSamples=[{tick:8600,lost:0,killed:0}];
+  memory.ledger={seenOwn:new Map(),seenEnemy:new Map(),seeded:true,ownBuilt:0,ownUnitsLost:6,ownBuildingsLost:0,enemyUnitsDestroyed:1,enemyBuildingsDestroyed:0};
+  snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,memory);
+  const a=snap.state.combatAssessment;
+  assert.equal(a.level,1);assert.equal(a.tradingBadly,true);assert.equal(a.recentLost,6);assert.equal(a.recentKilled,1);
+  assert.equal(memory.mission,undefined,'the failing assault is abandoned');assert.equal(memory.abandonedAttack.targetId,900);
+  assert.equal(snap.state.forceReadiness.threshold,12);assert.equal(snap.state.forceReadiness.ready,false);assert.match(snap.state.forceReadiness.reason,/8\/12/);
+  assert.ok(!groups.tactics.actions.assault_900,'no piecemeal re-attack');assert.ok(groups.tactics.actions.assemble_force,'the force regroups instead');
+  assert.match(groups.tactics.instructions,/ATTACKS ARE FAILING \(escalation 1/);assert.match(groups.tactics.instructions,/empty civilian buildings near the target/);
+  assert.equal(a.assets.forwardGarrisons,1);assert.equal(snap.state.forceGoal.groundCombatVehicles.target,16);
+  assert.match(groups.vehicles.instructions,/REINFORCE \(escalation 1\)/);
+  // Favourable exchanges later bring the level back down.
+  memory.ledger.enemyUnitsDestroyed=20;memory.combatSamples=[{tick:11900,lost:6,killed:1}];
+  const later=world({ own, enemies:[pentagon,civilian], offers:{3:[{name:'TANK',type:7}]}, tick:12000 });
+  Object.assign(later.memory,{ledger:memory.ledger,combatSamples:memory.combatSamples,escalation:memory.escalation,enemyBuildings:memory.enemyBuildings});
+  const s3=collectState(later.api,catalog);candidateGroups(later.api,catalog,s3,later.memory);
+  assert.equal(s3.state.combatAssessment.level,0);assert.equal(s3.state.forceReadiness.threshold,8);
+});
+
+test('a stalled assault escalates even without losses, and a forward garrison is offered next to the target', () => {
+  const own=[...base,unit(2,'BARRACKS',2,22,22),...Array.from({length:9},(_,i)=>unit(10+i,'GI',3,25+i,25))];
+  catalog.HOUSE={label:'House'};catalog.GI.occupier=true;
+  const civilian={...unit(950,'HOUSE',2,43,44),primaryWeapon:undefined,garrison:{canOccupy:true,count:0,capacity:5,unitIds:[]}};
+  const { api, memory } = world({ own, enemies:[pentagon,civilian], offers:{2:[{name:'GI',type:3}]}, tick:20000 });
+  memory.mission={mode:'attack',targetId:900,ids:[10],x:45,y:45,since:20000-3000};
+  memory.combatSamples=[{tick:19000,lost:0,killed:0}];memory.ledger={seenOwn:new Map(),seenEnemy:new Map(),seeded:true,ownBuilt:0,ownUnitsLost:0,ownBuildingsLost:0,enemyUnitsDestroyed:0,enemyBuildingsDestroyed:0};
+  const snap=collectState(api,catalog);const groups=candidateGroups(api,catalog,snap,memory);
+  assert.equal(snap.state.combatAssessment.staleAttack,true);assert.equal(snap.state.combatAssessment.level,1);assert.match(snap.state.combatAssessment.reason,/made no progress/);
+  const occupy=groups.garrison?.actions?.occupy_950;
+  assert.ok(occupy,'the house next to the Pentagon becomes a forward strongpoint option');assert.match(groups.garrison.criteria.occupy_950,/forward strongpoint/);
+  assert.match(groups.garrison.instructions,/ESCALATION 1/);
 });

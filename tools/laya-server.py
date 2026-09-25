@@ -206,8 +206,17 @@ def resolve_checkpoint(value, repo):
 
 
 def lan_addresses():
-    """IPv4 addresses of this machine on private networks, for the startup banner."""
+    """IPv4 addresses of this machine on private networks (LAN, Tailscale, VPN), for the startup banner."""
     found = []
+    # Every interface, so Tailscale / VPN addresses show up even though they are not the default route.
+    try:
+        import re, subprocess
+        out = subprocess.run(["ifconfig"] if sys.platform != "linux" else ["ip", "-4", "-o", "addr"], capture_output=True, text=True, timeout=3).stdout
+        for ip in re.findall(r"inet (?:addr:)?(\d+\.\d+\.\d+\.\d+)", out):
+            if ip not in found and not ip.startswith("127."):
+                found.append(ip)
+    except Exception:
+        pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
@@ -284,8 +293,11 @@ def main(argv=None):
     server = ThreadingHTTPServer((args.host, args.port), make_handler(service, quiet=args.quiet))
     server.daemon_threads = True
     hosts = [args.host] if args.host != "0.0.0.0" else ["127.0.0.1", *lan_addresses()]
+    def kind(host):
+        a, b = (int(x) for x in host.split(".")[:2]) if host.count(".") == 3 and host.replace(".", "").isdigit() else (0, 0)
+        return "Tailscale / CGNAT" if a == 100 and 64 <= b <= 127 else "loopback" if a == 127 else "LAN"
     for host in hosts:
-        print(f"Laya decision server listening on http://{host}:{args.port}/v1/systemone", flush=True)
+        print(f"Laya decision server listening on http://{host}:{args.port}/v1/systemone  ({kind(host)})", flush=True)
     print("Extension setting: model source = Local Laya, local server URL = " + ", ".join(f"http://{h}:{args.port}/v1" for h in hosts), flush=True)
     if args.token:
         print(f"Extension setting: local access token = {args.token}", flush=True)

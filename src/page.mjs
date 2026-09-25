@@ -2,11 +2,13 @@ import {attachJevPlayer} from './player/werhd-jev-player.mjs';
 import {CHANNEL} from './shared.mjs';
 import {createObserver} from './observer.mjs';
 
-const VERSION='0.4.4';
+const VERSION='0.7.5';
 if(window.__werhdJevExtension?.version!==VERSION){
   window.__werhdJevExtension?.dispose?.();
   let player,token='',api;
   const pending=new Map();
+  // Chat models may think for tens of seconds; the background says how long to wait per provider.
+  let requestTimeoutMs=15000;
   const post = data => window.postMessage({channel:CHANNEL,direction:'to-extension',token,...data},location.origin);
   const receive = e => {
     const m=e.data;
@@ -19,7 +21,7 @@ if(window.__werhdJevExtension?.version!==VERSION){
     if(signal.aborted)return reject(new DOMException('Stopped','AbortError'));
     const id=crypto.randomUUID();
     const cancel=()=>{finish();reject(new DOMException('Stopped','AbortError'));};
-    const timer=setTimeout(()=>{finish();reject(new Error('扩展后台响应超时，请检查插件状态。'));},15000);
+    const timer=setTimeout(()=>{finish();reject(new Error('扩展后台响应超时，请检查插件状态。'));},requestTimeoutMs);
     const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',cancel);pending.delete(id);};
     pending.set(id,{resolve,reject,finish});signal.addEventListener('abort',cancel,{once:true});post({type:'DECIDE',id,body});
   });
@@ -43,8 +45,16 @@ if(window.__werhdJevExtension?.version!==VERSION){
       player?.stop('session_replaced');
       // Stop an older manually attached client to avoid two controllers commanding one player.
       window.werhdJev?.stop?.('extension_takeover');
-      token=options.token;api=window.werhd;
-      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,requestDecision,onEvent:event=>{
+      token=options.token;api=window.werhd;requestTimeoutMs=Number.isInteger(options.requestTimeoutMs)?options.requestTimeoutMs:15000;
+      // Match metadata the public API can give: players, map size, clock, plus the page's own title and URL.
+      // There is no map or mission name in the API, so the page title is the closest handle.
+      const meta=(()=>{try{
+        const players=(api.players?.()??[]).slice(0,16).map(p=>({name:String(p.name??'').slice(0,40),country:p.country?String(p.country).slice(0,24):undefined,allied:!!p.allied,isAi:!!p.isAi,combatant:!!p.combatant,isObserver:!!p.isObserver,defeated:!!p.defeated}));
+        const me=api.me();
+        return {pageTitle:String(document.title).slice(0,120),url:(location.origin+location.pathname+location.hash).slice(0,300),me:{name:String(me?.name??'').slice(0,40),country:me?.country?String(me.country).slice(0,24):undefined},players,playerCount:players.filter(p=>p.combatant&&!p.isObserver).length,opponents:players.filter(p=>!p.allied&&p.combatant&&!p.isObserver).length,map:api.map?.size?.(),startTick:api.tick(),startTime:api.time()};
+      }catch{return null;}})();
+      if(meta)post({type:'EVENT',event:{kind:'meta',...meta}});
+      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,commander:options.commander===true,...(Number.isInteger(options.maxStaleTicks)?{maxStaleTicks:options.maxStaleTicks}:{}),requestDecision,onEvent:event=>{
         post({type:'EVENT',event});
       }});
       return {running:true};

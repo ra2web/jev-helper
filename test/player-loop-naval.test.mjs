@@ -144,3 +144,24 @@ test('ships that can reach a base attacker join the defend mission', () => {
   assert.ok(defend.ids.includes(3), 'the submarine is part of the defence');
   assert.ok(defend.ids.includes(4), 'the tank still is');
 });
+
+test('after several all-wait turns with nothing executed the player asks less often, and speeds up again on action', async () => {
+  const { QUIET_TURNS } = await import('../src/player/werhd-jev-player.mjs');
+  const g = game();
+  const requests = [];
+  let answer = 'wait';
+  const player = await attachJevPlayer(g.api, {
+    catalog: catalog(), intervalMs: 20, disableMicro: true, maxDecisions: 500,
+    requestDecision: async body => { requests.push(body); g.advance(10); return { answers: Object.fromEntries(Object.keys(body.groups).map(id => [id, { type: 'choice', choice: id === 'tactics' ? answer : 'wait', confidence: 1 }])) }; },
+  });
+  try {
+    await new Promise(r => setTimeout(r, 400));
+    assert.ok(requests.length >= QUIET_TURNS && requests.length <= QUIET_TURNS + 2, `quiet after ${QUIET_TURNS} all-wait turns (asked ${requests.length} times in 400 ms at a 20 ms interval)`);
+    // An answer that does something ends the quiet spell: the base comes under attack and the next wake asks at once.
+    const before = requests.length;
+    g.own.push({ id: 50, name: 'TANK', type: 7, tile: { rx: 11, ry: 11 }, primaryWeapon: { damage: 50, range: 5 }, isIdle: true, hitPoints: 100, maxHitPoints: 100 });
+    player.memory.quietTurns = 0;
+    for (let i = 0; i < 4; i++) { g.advance(5); g.fire(); await new Promise(r => setTimeout(r, 40)); } // the game's tick callback wakes the loop
+    assert.ok(requests.length - before >= 3, 'normal pace again once the quiet count is reset');
+  } finally { player.stop('manual'); }
+});
